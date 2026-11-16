@@ -5,6 +5,19 @@ Changelog
 
     This is not exhaustive. For an exhaustive list of changes, see the git log.
 
+.. _v-unreleased:
+
+Unreleased
+----------
+
+- Add a ``validate`` argument to ``dask.dataframe.DataFrame.merge`` and
+  ``dask.dataframe.merge`` declaring one-to-one, one-to-many, many-to-one or
+  many-to-many join-key cardinality. The distributed, memory-bounded check
+  runs against the full merge inputs at compute time, raises
+  ``pandas.errors.MergeError`` with pandas-compatible messages on violation,
+  and reuses global-uniqueness evidence from upstream ``drop_duplicates`` and
+  qualifying one-to-one merges to avoid redundant scans.
+
 .. _v2025.10.0:
 
 2025.10.0

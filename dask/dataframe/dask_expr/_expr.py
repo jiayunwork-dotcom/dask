@@ -488,6 +488,31 @@ class Expr(core.SingletonExpr):
         """
         return set()
 
+    @functools.cached_property
+    def unique_key_sets(self) -> frozenset:
+        """Column groups whose value combinations are *globally unique*.
+
+        Unlike :attr:`unique_partition_mapping_columns_from_shuffle`, this is
+        a cardinality guarantee (no two rows share the same key) rather than a
+        partition-location guarantee.  Knowing the divisions or that equal
+        keys live in the same partition is therefore not enough to populate
+        it.  Evidence is only produced by operations that genuinely establish
+        global uniqueness (currently ``drop_duplicates`` and qualifying
+        one-to-one merges) and propagated through operations that preserve the
+        key values and their one-to-one correspondence (projections that keep
+        all key columns, pure renames, row filters, repartitions/shuffles).
+
+        Every element is a ``frozenset`` of column labels.  A larger unique
+        key set does *not* imply that any of its subsets is unique.
+
+        Returns
+        -------
+        frozenset of frozensets
+            The column groups known to be globally unique.  Empty when nothing
+            can be proven.
+        """
+        return frozenset()
+
     @property
     def _projection_columns(self):
         return self.columns
@@ -1222,6 +1247,11 @@ class DropnaSeries(Blockwise):
     operation = M.dropna
     _preserves_partitioning_information = True
 
+    @functools.cached_property
+    def unique_key_sets(self):
+        # Row removal cannot introduce duplicate keys.
+        return self.frame.unique_key_sets
+
 
 class DropnaFrame(Blockwise):
     _parameters = ["frame", "how", "subset", "thresh"]
@@ -1229,6 +1259,11 @@ class DropnaFrame(Blockwise):
     _keyword_only = ["how", "subset", "thresh"]
     operation = M.dropna
     _preserves_partitioning_information = True
+
+    @functools.cached_property
+    def unique_key_sets(self):
+        # Row removal cannot introduce duplicate keys.
+        return self.frame.unique_key_sets
 
     def _simplify_up(self, parent, dependents):
         if isinstance(parent, Projection) and self.subset is not None:
@@ -1364,6 +1399,18 @@ class RenameFrame(Elemwise):
                 subset = self.frame._meta[[elem]]
                 result.add(subset.columns[0])
         return result
+
+    @functools.cached_property
+    def unique_key_sets(self):
+        # A pure column rename keeps every value and the row correspondence,
+        # so all guarantees survive with the renamed labels.
+        columns = self.operand("columns")
+        if not isinstance(columns, Mapping):
+            return self.frame.unique_key_sets
+        return frozenset(
+            frozenset(columns.get(col, col) for col in key_set)
+            for key_set in self.frame.unique_key_sets
+        )
 
     @staticmethod
     def operation(df, columns):
@@ -1972,6 +2019,17 @@ class Assign(Elemwise):
         }
 
     @functools.cached_property
+    def unique_key_sets(self):
+        # Overwriting (or introducing) a column invalidates every guarantee
+        # whose key set contains that column: the key values may have changed.
+        assigned = set(self.keys)
+        return frozenset(
+            key_set
+            for key_set in self.frame.unique_key_sets
+            if not key_set.intersection(assigned)
+        )
+
+    @functools.cached_property
     def keys(self):
         return self.operands[1::2]
 
@@ -2105,6 +2163,12 @@ class Filter(Blockwise):
     operation = operator.getitem
     _preserves_partitioning_information = True
 
+    @functools.cached_property
+    def unique_key_sets(self):
+        # Removing rows can never introduce duplicate keys, so every
+        # uniqueness guarantee of the input survives a row filter.
+        return self.frame.unique_key_sets
+
     def _simplify_up(self, parent, dependents):
         if isinstance(self.predicate, Or):
             result = rewrite_filters(self.predicate)
@@ -2165,6 +2229,16 @@ class Projection(Elemwise):
             for c in self.frame.unique_partition_mapping_columns_from_shuffle
             if c in columns or isinstance(c, tuple) and set(c).issubset(columns)
         }
+
+    @functools.cached_property
+    def unique_key_sets(self):
+        # A projection preserves a uniqueness guarantee only when *all*
+        # columns of the unique key set are retained. Dropping a key column
+        # (or selecting a strict subset of the key) invalidates it.
+        columns = set(self.columns)
+        return frozenset(
+            key_set for key_set in self.frame.unique_key_sets if key_set <= columns
+        )
 
     @property
     def columns(self):
@@ -2381,6 +2455,12 @@ class ResetIndex(Elemwise):
     operation = M.reset_index
     _filter_passthrough = True
     _preserves_partitioning_information = True
+
+    @functools.cached_property
+    def unique_key_sets(self):
+        # reset_index only materializes the index as a new column; existing
+        # data columns keep their values and row correspondence.
+        return self.frame.unique_key_sets
 
     @functools.cached_property
     def _kwargs(self) -> dict:

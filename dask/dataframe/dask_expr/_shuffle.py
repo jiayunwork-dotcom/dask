@@ -109,6 +109,12 @@ class ShuffleBase(Expr):
         idx = self.original_partitioning_index or self._partitioning_index
         return {tuple(idx)} if isinstance(idx, list) else set()
 
+    @functools.cached_property
+    def unique_key_sets(self):
+        # A shuffle only moves rows between partitions; it neither changes key
+        # values nor adds/removes rows, so all uniqueness guarantees survive.
+        return self.frame.unique_key_sets
+
     def _simplify_up(self, parent, dependents):
         if isinstance(parent, Filter) and self._filter_passthrough_available(
             parent, dependents

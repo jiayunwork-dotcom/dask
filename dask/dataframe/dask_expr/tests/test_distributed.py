@@ -468,3 +468,46 @@ def test_respect_context_shuffle(df, pdf, func):
     with dask.config.set({"dataframe.shuffle.method": "tasks"}):
         result = q.optimize(fuse=False)
     assert len([x for x in result.walk() if isinstance(x, P2PShuffle)]) > 0
+
+
+@pytest.mark.parametrize("shuffle_method", ["p2p", "tasks", "disk"])
+@gen_cluster(client=True)
+async def test_merge_validate_distributed(c, s, a, b, shuffle_method):
+    from pandas.errors import MergeError
+
+    left_pdf = pd.DataFrame({"k": list(range(20)), "v": range(20)})
+    right_bad = pd.DataFrame(
+        {"k": list(range(10)) + list(range(10)), "w": range(20)}
+    )
+    right_good = pd.DataFrame({"k": list(range(20)), "w": range(20)})
+    left = from_pandas(left_pdf, npartitions=4)
+    right_bad = from_pandas(right_bad, npartitions=4)
+    right_good = from_pandas(right_good, npartitions=4)
+
+    bad = left.merge(
+        right_bad, on="k", validate="1:1", shuffle_method=shuffle_method
+    )
+    with pytest.raises(MergeError):
+        await c.compute(bad)
+
+    good = left.merge(
+        right_good, on="k", validate="1:1", shuffle_method=shuffle_method
+    )
+    result = await c.compute(good)
+    assert len(result) == 20
+
+
+@gen_cluster(client=True)
+async def test_merge_validate_barrier_survives_partition_filter(c, s, a, b):
+    from pandas.errors import MergeError
+
+    left = from_pandas(
+        pd.DataFrame({"k": [1, 1, 2, 3], "v": [1, 2, 3, 4]}), npartitions=4
+    )
+    right = from_pandas(
+        pd.DataFrame({"k": [1, 2, 3, 4], "w": [1, 2, 3, 4]}), npartitions=4
+    )
+    joined = left.merge(right, on="k", validate="1:m", shuffle_method="p2p")
+    with pytest.raises(MergeError):
+        # Computing a single output partition still forces the full check.
+        await c.compute(joined.partitions[0])

@@ -2864,6 +2864,7 @@ class DataFrame(FrameBase):
         shuffle_method=None,
         npartitions=None,
         broadcast=None,
+        validate=None,
     ):
         """Merge the DataFrame with another DataFrame
 
@@ -2931,6 +2932,24 @@ class DataFrame(FrameBase):
             within the simple heuristic (a large number makes Dask more likely
             to choose the ``broacast_join`` code path). See ``broadcast_join``
             for more information.
+        validate : str, optional
+            If specified, checks that the merge keys of the given dataframes
+            satisfy the requested cardinality and raises
+            :class:`pandas.errors.MergeError` at compute time otherwise.
+
+            - "one_to_one" / "1:1": keys must be unique in both datasets
+            - "one_to_many" / "1:m": keys must be unique in the left dataset
+            - "many_to_one" / "m:1": keys must be unique in the right dataset
+            - "many_to_many" / "m:m": no check (equivalent to ``None``)
+
+            The check runs against the *full* merge inputs (independent of any
+            filter or projection applied to the result), is distributed and
+            bounded in memory, and reuses uniqueness evidence produced by
+            upstream ``drop_duplicates`` or qualifying merges when available,
+            so proven-unique inputs do not trigger an extra global scan.
+            ``None`` and ``m:m`` add no check; an invalid string raises
+            ``ValueError`` while constructing the graph, without reading any
+            source data. Not supported with ``how="leftsemi"``.
 
         Notes
         -----
@@ -2971,6 +2990,7 @@ class DataFrame(FrameBase):
             shuffle_method,
             npartitions=npartitions,
             broadcast=broadcast,
+            validate=validate,
         )
 
     @derived_from(pd.DataFrame)
@@ -5566,7 +5586,11 @@ def merge(
     shuffle_method=None,
     npartitions=None,
     broadcast=None,
+    validate=None,
 ):
+    from dask.dataframe.dask_expr._merge_validate import normalize_validate
+
+    validate = normalize_validate(validate)
     for o in [on, left_on, right_on]:
         if isinstance(o, FrameBase):
             raise NotImplementedError()
@@ -5588,6 +5612,14 @@ def merge(
         raise ValueError(
             f"dask.dataframe.merge does not support how='{how}'."
             f"Options are: {supported_how}."
+        )
+
+    # Cardinality validation is incompatible with the leftsemi rewrite, which
+    # changes the right input (a projection + rename) before the merge.
+    if validate is not None and how == "leftsemi":
+        raise ValueError(
+            "validate is not supported with how='leftsemi'. "
+            "Use how='inner' or how='left' with a cardinality check instead."
         )
 
     if how == "leftsemi":
@@ -5636,6 +5668,7 @@ def merge(
             shuffle_method=get_specified_shuffle(shuffle_method),
             _npartitions=npartitions,
             broadcast=broadcast,
+            validate=validate,
         )
     )
     if left._meta.index.name != right._meta.index.name:

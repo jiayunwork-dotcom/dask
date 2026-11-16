@@ -647,6 +647,51 @@ class DropDuplicates(Unique):
             out["ignore_index"] = self.ignore_index
         return out
 
+    @functools.cached_property
+    def _normalized_subset(self) -> frozenset:
+        """Join/dedup key of this operation as a set of column labels."""
+        if is_dataframe_like(self.frame._meta):
+            subset = self.subset or list(self.frame.columns)
+            return frozenset(subset)
+        # Series: the (single) value column is the key
+        name = self.frame._meta.name
+        return frozenset([name]) if name is not None else frozenset()
+
+    @functools.cached_property
+    def unique_key_sets(self):
+        # The output of drop_duplicates is globally unique on its subset by
+        # construction. Guarantees of the input also survive because the
+        # operation only removes rows.
+        return self.frame.unique_key_sets | {self._normalized_subset}
+
+    def _simplify_down(self):
+        # If the key is already known to be globally unique, drop_duplicates
+        # is the identity (for keep="first"/"last" and a preserved index), so
+        # the global shuffle reduction must not be planned again.
+        if self._is_identity_on_unique_input():
+            return self.frame
+        return None
+
+    def _is_identity_on_unique_input(self):
+        return (
+            not self.ignore_index
+            and self.keep in ("first", "last")
+            and bool(self._normalized_subset)
+            and self._normalized_subset in self.frame.unique_key_sets
+        )
+
+    def _lower(self):
+        # The simplify pass may run before a nested dedup has produced its
+        # evidence, so re-check the identity condition at lowering time.
+        if self._is_identity_on_unique_input():
+            # The key is proven globally unique, so for keep="first"/"last"
+            # drop_duplicates is the identity. Returning the (un-lowered)
+            # frame is sufficient: lower_once lowers operands itself, and the
+            # resulting name change keeps the lowering loop going until this
+            # node is fully replaced.
+            return self.frame
+        return super()._lower()
+
     def _simplify_up(self, parent, dependents):
         if self.subset is not None and isinstance(parent, Projection):
             columns = determine_column_projection(

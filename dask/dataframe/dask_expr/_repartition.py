@@ -81,6 +81,13 @@ class Repartition(Expr):
         else:
             return set()
 
+    @functools.cached_property
+    def unique_key_sets(self):
+        # Repartitioning only splits and concatenates partitions; it never
+        # changes row values, so global uniqueness guarantees survive every
+        # repartition variant (fewer/more partitions, new divisions, ...).
+        return self.frame.unique_key_sets
+
     def _lower(self):
         if type(self) != Repartition:
             # This lower logic should not be inherited

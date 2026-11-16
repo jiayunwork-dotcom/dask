@@ -77,6 +77,7 @@ class Merge(Expr):
         "shuffle_method",
         "_npartitions",
         "broadcast",
+        "validate",
     ]
     _defaults = {
         "how": "inner",
@@ -89,6 +90,7 @@ class Merge(Expr):
         "shuffle_method": None,
         "_npartitions": None,
         "broadcast": None,
+        "validate": None,
     }
 
     @property
@@ -207,6 +209,58 @@ class Merge(Expr):
             return self.operand("_npartitions")
         return len(self._divisions()) - 1
 
+    @functools.cached_property
+    def unique_key_sets(self):
+        from dask.dataframe.dask_expr._merge_validate import merge_side_key_sets
+
+        result = frozenset()
+        output_columns = set(self.columns)
+        for side, on, index in (
+            (self.left, self.left_on, self.left_index),
+            (self.right, self.right_on, self.right_index),
+        ):
+            try:
+                result |= merge_side_key_sets(side, on, index, output_columns)
+            except Exception:
+                # Never let evidence detection break graph construction;
+                # the conservative default is simply "no guarantee".
+                continue
+        # A validated one-to-one merge on a shared, type-stable column key
+        # produces globally unique output keys.  This lets a subsequent
+        # drop_duplicates on the same key reuse the guarantee.
+        merge_guarantee = self._one_to_one_output_guarantee()
+        if merge_guarantee:
+            result |= {merge_guarantee}
+        return result
+
+    def _one_to_one_output_guarantee(self):
+        if self.validate not in ("1:1", "one_to_one"):
+            return None
+        if self.how not in ("inner", "left", "outer"):
+            return None
+        if self.left_index or self.right_index:
+            return None
+        left_on = self.left_on
+        right_on = self.right_on
+        left_cols = [left_on] if not isinstance(left_on, list) else left_on
+        right_cols = (
+            [right_on] if not isinstance(right_on, list) else right_on
+        )
+        if left_cols != right_cols:
+            # only shared (same-named) column keys
+            return None
+        # No key type conversion may occur: the key dtypes must be identical
+        # on both inputs, otherwise the output key values are not the same
+        # values the uniqueness was established on.
+        try:
+            left_dtypes = list(self.left._meta[left_cols].dtypes)
+            right_dtypes = list(self.right._meta[left_cols].dtypes)
+        except (KeyError, TypeError):
+            return None
+        if left_dtypes != right_dtypes:
+            return None
+        return frozenset(left_cols)
+
     @property
     def _bcast_left(self):
         if self.operand("_npartitions") is not None:
@@ -284,6 +338,75 @@ class Merge(Expr):
         return result
 
     def _lower(self):
+        # Compute the physical merge plan first, then attach the distributed
+        # cardinality validation (if required and not already proven).
+        plan = self._lower_plan()
+        return self._maybe_attach_validation(plan)
+
+    def _validation_evidence(self):
+        """Return the sides whose uniqueness is *already* guaranteed.
+
+        Uses the :attr:`unique_key_sets` evidence propagated through the
+        expression tree.  Evidence is only available for column keys.
+        """
+        from dask.dataframe.dask_expr._merge_validate import _CHECKED, _CHECKED_SIDES
+
+        validate = self.validate
+        if validate not in _CHECKED:
+            return frozenset(("left", "right"))
+        required = set(_CHECKED_SIDES[validate])
+        proven = set()
+        for side_name, side_expr, on, index in (
+            ("left", self.left, self.left_on, self.left_index),
+            ("right", self.right, self.right_on, self.right_index),
+        ):
+            if side_name not in required or index:
+                continue
+            cols = on if isinstance(on, list) else [on]
+            key_set = frozenset(cols)
+            if key_set and key_set in side_expr.unique_key_sets:
+                proven.add(side_name)
+        return frozenset(proven)
+
+    def _maybe_attach_validation(self, plan):
+        from dask.dataframe.dask_expr._merge_validate import (
+            _CHECKED,
+            _CHECKED_SIDES,
+            apply_cardinality_check,
+        )
+
+        validate = self.validate
+        if validate not in _CHECKED:
+            return plan
+        required = set(_CHECKED_SIDES[validate])
+        proven = set(self._validation_evidence())
+        missing = required - proven
+        if not missing:
+            # Every required side is already known unique from upstream
+            # evidence: no dedicated uniqueness scan is planned.
+            return plan
+        # Map the subset of sides that still need checking onto a validate
+        # mode that checks exactly those sides.  The barrier raises the
+        # pandas MergeError for the original *validate* mode semantics.
+        side_mode = {
+            frozenset(("left",)): "1:m",
+            frozenset(("right",)): "m:1",
+            frozenset(("left", "right")): "1:1",
+        }[frozenset(missing)]
+        return apply_cardinality_check(
+            plan,
+            self.left,
+            self.right,
+            self.left_on,
+            self.right_on,
+            self.left_index,
+            self.right_index,
+            side_mode,
+            self.shuffle_method,
+            error_validate=validate,
+        )
+
+    def _lower_plan(self):
         # Lower from an abstract expression
         left = self.left
         right = self.right
@@ -304,7 +427,7 @@ class Merge(Expr):
 
         # Check for "trivial" broadcast (single partition)
         if self._is_single_partition_broadcast:
-            return BlockwiseMerge(left, right, **self.kwargs)
+            return BlockwiseMerge(left, right, validate=self.validate, **self.kwargs)
 
         # NOTE: Merging on an index is fragile. Pandas behavior
         # depends on the actual data, and so we cannot use `meta`
@@ -364,6 +487,7 @@ class Merge(Expr):
                     right_index,
                     self.suffixes,
                     self.indicator,
+                    validate=self.validate,
                 )
 
         shuffle_npartitions = self.operand("_npartitions") or max(
@@ -389,6 +513,7 @@ class Merge(Expr):
                 shuffle_left_on=shuffle_left_on,
                 shuffle_right_on=shuffle_right_on,
                 _npartitions=shuffle_npartitions,
+                validate=self.validate,
             )
         if shuffle_left_on and not (
             left_already_partitioned and self.left.npartitions == shuffle_npartitions
@@ -415,10 +540,21 @@ class Merge(Expr):
             )
 
         # Blockwise merge
-        return BlockwiseMerge(left, right, **self.kwargs)
+        return BlockwiseMerge(
+            left, right, validate=self.validate, **self.kwargs
+        )
 
     def _simplify_up(self, parent, dependents):
         if isinstance(parent, Filter):
+            from dask.dataframe.dask_expr._merge_validate import _CHECKED
+
+            if self.validate in _CHECKED:
+                # A filter *above* a cardinality-checked merge must not be
+                # pushed into the merge inputs: the guarantee is defined over
+                # the inputs as they were when merge() was called. Filters
+                # already below the merge (part of self.left/self.right) are
+                # legitimately part of those inputs.
+                return
             if not self._filter_passthrough_available(parent, dependents):
                 return
             predicate = parent.predicate
@@ -533,6 +669,7 @@ class HashJoinP2P(Merge, PartitionsFiltered):
         "shuffle_left_on",
         "shuffle_right_on",
         "_npartitions",
+        "validate",
     ]
     _defaults = {
         "how": "inner",
@@ -546,6 +683,7 @@ class HashJoinP2P(Merge, PartitionsFiltered):
         "shuffle_left_on": None,
         "shuffle_right_on": None,
         "_npartitions": None,
+        "validate": None,
     }
     is_broadcast_join = False
 
@@ -695,6 +833,7 @@ class BroadcastJoin(Merge, PartitionsFiltered):
         "suffixes",
         "indicator",
         "_partitions",
+        "validate",
     ]
     _defaults = {
         "how": "inner",
@@ -705,6 +844,7 @@ class BroadcastJoin(Merge, PartitionsFiltered):
         "suffixes": ("_x", "_y"),
         "indicator": False,
         "_partitions": None,
+        "validate": None,
     }
 
     def _divisions(self):

@@ -82,3 +82,87 @@ maintains that index, like Parquet.
         right_one, how="left", left_index=True, right_index=True)
     result = result.merge(
         right_two, how="left", left_index=True, right_index=True)
+
+Cardinality Validation (``validate``)
+-------------------------------------
+
+Like pandas, :meth:`dask.dataframe.DataFrame.merge` and :func:`dask.dataframe.merge`
+accept a ``validate`` argument declaring the expected cardinality of the join
+keys:
+
+- ``"one_to_one"`` / ``"1:1"``: the join keys must be unique in both datasets
+- ``"one_to_many"`` / ``"1:m"``: the join keys must be unique in the left dataset
+- ``"many_to_one"`` / ``"m:1"``: the join keys must be unique in the right dataset
+- ``"many_to_many"`` / ``"m:m"`` and ``None``: no check
+
+.. code-block:: python
+
+    # Raises pandas.errors.MergeError at compute time if the keys of either
+    # side are duplicated, including duplicates that never match a row on the
+    # other side.
+    orders.merge(customers, on="customer_id", validate="many_to_one")
+
+The semantics match pandas 2.2.3 exactly: key equality (including the fact
+that ``NaN``/``NA`` values compare equal) and the
+:class:`pandas.errors.MergeError` messages are identical, so the same code can
+be validated against pandas on small samples. An invalid ``validate`` string,
+or combining a non-default mode with ``how="leftsemi"``, raises ``ValueError``
+while the expression is being built — no source data is read at that point.
+The actual data check only runs when the result is computed.
+
+Global guarantees and the optimization barrier
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The check is defined over the *full inputs* of the merge as they were when
+``merge`` was called. Filtering a dataframe before the merge means the
+filtered (and therefore potentially still unique) input is what gets checked;
+filtering or projecting the merge *result* can never remove the check, even if
+every offending row would have been filtered out, and even if you only compute
+a single output partition or drop the join-key columns afterwards. This is
+implemented as an optimization barrier placed above the merge, so query
+optimization cannot fuse, push down or prune the validation away.
+
+Reusing existing uniqueness evidence
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Dask tracks which column groups are *globally unique* as expressions are
+transformed. A ``drop_duplicates(subset=K, keep="first"/"last")`` establishes
+that ``K`` is unique, and that evidence survives:
+
+- projections that keep every column of ``K`` (a larger unique key set does
+  **not** prove that any subset is unique),
+- pure column renames (including reordering the columns of a composite key),
+- row filters and ``dropna``,
+- repartitions and shuffles.
+
+It is deliberately invalidated by operations that can change key values or
+mix rows, such as overwriting a key column, ``concat`` of two individually
+unique tables, or arbitrary ``map_partitions``. Merely knowing the divisions
+or that equal keys live in the same partition never counts as a uniqueness
+guarantee.
+
+When a checked merge side already carries evidence for its join key, no extra
+global uniqueness scan, dedup or data redistribution is planned. In
+particular, calling ``drop_duplicates`` again on an already-unique key reuses
+the existing plan instead of running a second global reduction, and a
+validated one-to-one inner/left/outer merge on a shared, type-stable column
+key produces a result whose key is itself known unique, so a later
+``drop_duplicates`` on that key is free.
+
+Cost and bounded resource use
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The check is distributed and bounded in memory. Each input partition emits a
+small local summary of its *distinct* join keys with their multiplicities;
+only these summaries are hash-partitioned by the key, so equal keys (including
+hot keys) meet on one check task while the raw rows stay on their original
+partitions. A per-bucket sum flags any key whose global multiplicity exceeds
+one, and a constant-fan-in tree reduction combines the boolean flags into one
+scalar that every merge output partition depends on. Consequently no single
+new task ever holds all distinct keys of a side, let alone all of its rows,
+and the validation state does not grow with the number of join output rows.
+It works with the ``tasks``, ``disk`` and ``p2p`` shuffle methods, broadcast
+and index-aligned joins, and with the synchronous, threaded and distributed
+schedulers. The merge's own shuffle is still required; when a checked side is
+already correctly partitioned the validation summary reuses that layout and
+adds no further data movement beyond the small summaries.
