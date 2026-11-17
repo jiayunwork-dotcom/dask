@@ -18,6 +18,7 @@ Highlights
 
 .. dropdown:: Additional changes
 
+  - Add ``skew_join`` option to ``DataFrame.merge`` / ``dask.dataframe.merge`` to disperse caller-identified hot join keys across salt buckets (``'tasks'`` and ``'disk'`` shuffles)
   - Replace ``versioneer`` with ``setuptools-scm`` (:pr:`12133`) `Jacob Tomlinson`_
   - Apply ruff/Pylint Refactor rules (PLR) (:pr:`12010`) `Dimitri Papadopoulos Orfanos`_
   - Remove files from ``MANIFEST.in`` (:pr:`12041`) `Dimitri Papadopoulos Orfanos`_

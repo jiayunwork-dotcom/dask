@@ -2864,6 +2864,7 @@ class DataFrame(FrameBase):
         shuffle_method=None,
         npartitions=None,
         broadcast=None,
+        skew_join=None,
     ):
         """Merge the DataFrame with another DataFrame
 
@@ -2931,6 +2932,28 @@ class DataFrame(FrameBase):
             within the simple heuristic (a large number makes Dask more likely
             to choose the ``broacast_join`` code path). See ``broadcast_join``
             for more information.
+        skew_join: dict or None, optional
+            Enable the skew-aware hash join for known hot keys.  ``None`` (the
+            default) keeps the ordinary hash join.  Otherwise a mapping with
+            exactly two fields is required:
+
+            - ``hot_keys``: non-empty list of hot key tuples.  Every tuple has
+              one component per join column (matching the width of ``on`` /
+              ``left_on`` / ``right_on``); components are Python ``int``,
+              ``str`` or ``None``, where ``None`` denotes a missing key
+              component.  Booleans are not accepted as integers.  Duplicate
+              tuples are deduplicated.
+            - ``split_factor``: non-boolean integer between 2 and 16 giving the
+              number of salt buckets per hot key.
+
+            Rows carrying a hot key are split into ``split_factor`` salt
+            buckets on both sides and paired on an ``S x S`` task grid, while
+            all other rows keep using the normal hash partitions.  Supports
+            ``inner``, ``left``, ``right`` and ``outer`` joins on one or more
+            columns, including differently named left/right columns.  Index
+            joins, ``leftsemi``, ``broadcast=True`` and
+            ``shuffle_method='p2p'`` are rejected.  Only the ``'tasks'`` and
+            ``'disk'`` shuffle methods are supported.
 
         Notes
         -----
@@ -2971,6 +2994,7 @@ class DataFrame(FrameBase):
             shuffle_method,
             npartitions=npartitions,
             broadcast=broadcast,
+            skew_join=skew_join,
         )
 
     @derived_from(pd.DataFrame)
@@ -5566,6 +5590,7 @@ def merge(
     shuffle_method=None,
     npartitions=None,
     broadcast=None,
+    skew_join=None,
 ):
     for o in [on, left_on, right_on]:
         if isinstance(o, FrameBase):
@@ -5622,6 +5647,25 @@ def merge(
     if left_on and right_on:
         warn_dtype_mismatch(left, right, left_on, right_on)
 
+    if skew_join is not None:
+        # Normalize at the public entry point so equivalent configurations
+        # (e.g. numpy ints vs python ints, duplicate tuples) produce the same
+        # expression and therefore the same task keys.  This only validates
+        # structure and never executes source tasks.  When joining on an
+        # index the column keys are unset; defer the structural key-width /
+        # index-join rejection to Merge.skew_join_supported at lowering.
+        from dask.dataframe.dask_expr._skew_join import validate_skew_join
+
+        on_list = _convert_to_list(left_on)
+        if left_index or right_index:
+            # Index joins are rejected later with a dedicated message; keep
+            # the entry-point normalization from raising a misleading
+            # key-width error.
+            key_width = len(on_list) if on_list is not None else 0
+        else:
+            key_width = len(on_list) if on_list is not None else 0
+        skew_join = validate_skew_join(skew_join, key_width)
+
     result = new_collection(
         Merge(
             left,
@@ -5636,6 +5680,7 @@ def merge(
             shuffle_method=get_specified_shuffle(shuffle_method),
             _npartitions=npartitions,
             broadcast=broadcast,
+            skew_join=skew_join,
         )
     )
     if left._meta.index.name != right._meta.index.name:

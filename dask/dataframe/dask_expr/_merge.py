@@ -77,6 +77,7 @@ class Merge(Expr):
         "shuffle_method",
         "_npartitions",
         "broadcast",
+        "skew_join",
     ]
     _defaults = {
         "how": "inner",
@@ -89,6 +90,7 @@ class Merge(Expr):
         "shuffle_method": None,
         "_npartitions": None,
         "broadcast": None,
+        "skew_join": None,
     }
 
     @property
@@ -171,6 +173,13 @@ class Merge(Expr):
             result = self.left.unique_partition_mapping_columns_from_shuffle.copy()
             result.update(self.right.unique_partition_mapping_columns_from_shuffle)
             return result
+
+        if self.skew_join is not None:
+            # A skew-aware join spreads hot keys across salt buckets, so its
+            # output has no key co-location guarantee.  Returning an empty
+            # mapping forces downstream groupby/drop-duplicates/merge to
+            # schedule the shuffles they actually need.
+            return set()
 
         return {
             tuple(self.left_on) if isinstance(self.left_on, list) else self.left_on,
@@ -283,6 +292,43 @@ class Merge(Expr):
             result = tuple(on) in expr.unique_partition_mapping_columns_from_shuffle
         return result
 
+    @functools.cached_property
+    def skew_join_supported(self) -> bool:
+        """Whether the skew-join physical plan is legal for this Merge.
+
+        Validation happens at graph construction time and never executes
+        source tasks.
+        """
+        from dask.dataframe.dask_expr._skew_join import validate_skew_join
+
+        if self.skew_join is None:
+            return False
+        if self.how not in ("inner", "left", "right", "outer"):
+            raise ValueError(
+                "skew_join only supports how in "
+                "('inner', 'left', 'right', 'outer'); "
+                f"got how={self.how!r}"
+            )
+        if self.left_index or self.right_index:
+            raise ValueError(
+                "skew_join only supports column-based join keys; index joins "
+                "are not supported"
+            )
+        if self.broadcast is True:
+            raise ValueError(
+                "skew_join cannot be combined with broadcast=True"
+            )
+        specified = self.shuffle_method or get_default_shuffle_method()
+        if specified == "p2p":
+            raise ValueError(
+                "skew_join does not support shuffle_method='p2p'; use "
+                "shuffle_method='tasks' or shuffle_method='disk'"
+            )
+        key_width = len(_convert_to_list(self.left_on))
+        # Raises ValueError for malformed configurations.
+        validate_skew_join(self.skew_join, key_width)
+        return True
+
     def _lower(self):
         # Lower from an abstract expression
         left = self.left
@@ -303,8 +349,32 @@ class Merge(Expr):
         #  1. Add/leverage partition statistics
 
         # Check for "trivial" broadcast (single partition)
-        if self._is_single_partition_broadcast:
+        if self._is_single_partition_broadcast and self.skew_join is None:
             return BlockwiseMerge(left, right, **self.kwargs)
+
+        # Skew-aware hash join.  Validation raises at construction time for
+        # unsupported combinations.
+        if self.skew_join_supported:
+            from dask.dataframe.dask_expr._skew_join import SkewJoin
+
+            shuffle_npartitions = self.operand("_npartitions") or max(
+                self.left.npartitions, self.right.npartitions
+            )
+            return SkewJoin(
+                left,
+                right,
+                how=self.how,
+                left_on=left_on,
+                right_on=right_on,
+                left_index=left_index,
+                right_index=right_index,
+                suffixes=self.suffixes,
+                indicator=self.indicator,
+                shuffle_method=shuffle_method,
+                _npartitions=shuffle_npartitions,
+                broadcast=self.broadcast,
+                skew_join=self.skew_join,
+            )
 
         # NOTE: Merging on an index is fragile. Pandas behavior
         # depends on the actual data, and so we cannot use `meta`
