@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime
 
+from dask.dataframe import methods
+
 CombinedOutput = type("CombinedOutput", (tuple,), {})
 
 
@@ -13,23 +15,51 @@ def overlap_chunk(func, before, after, *args, **kwargs):
 
     out = func(*args, **kwargs)
 
-    if prev_part_length is None:
-        before = None
-    if isinstance(before, datetime.timedelta):
-        before = prev_part_length
-
     expansion = None
     if combined.shape[0] != 0:
         expansion = out.shape[0] // combined.shape[0]
-    if before and expansion:
-        before *= expansion
-    if next_part_length is None:
-        return out.iloc[before:]
-    if isinstance(after, datetime.timedelta):
-        after = next_part_length
-    if after and expansion:
-        after *= expansion
-    return out.iloc[before:-after]
+
+    # Trim the context rows that were *actually* added to this partition.
+    # This is not necessarily the requested ``before``/``after``: at the
+    # global boundaries, and when (empty) partitions provide fewer rows
+    # than requested, only the rows that are really present may be
+    # dropped so that no genuine rows of this partition are lost.
+    head = prev_part_length or 0
+    tail = next_part_length or 0
+    if expansion:
+        head *= expansion
+        tail *= expansion
+    if tail:
+        return out.iloc[head:-tail]
+    return out.iloc[head:]
+
+
+def _tail_with_context(prev, current, before, grouper):
+    """Last ``before`` rows of ``prev`` followed by ``current``.
+
+    When ``grouper`` is a dict of ``pandas.groupby`` keyword arguments, the
+    last ``before`` rows *per group* are returned instead.  Rows are kept
+    in their original (globally ordered) positions.
+    """
+    if prev is not None:
+        current = methods.concat([prev, current])
+    if grouper is None:
+        return current.tail(before)
+    return current.groupby(**grouper).tail(before)
+
+
+def _head_with_context(current, next_, after, grouper):
+    """First ``after`` rows of ``current`` followed by ``next_``.
+
+    When ``grouper`` is a dict of ``pandas.groupby`` keyword arguments, the
+    first ``after`` rows *per group* are returned instead.  Rows are kept
+    in their original (globally ordered) positions.
+    """
+    if next_ is not None:
+        current = methods.concat([current, next_])
+    if grouper is None:
+        return current.head(after)
+    return current.groupby(**grouper).head(after)
 
 
 def _head_timedelta(current, next_, after):

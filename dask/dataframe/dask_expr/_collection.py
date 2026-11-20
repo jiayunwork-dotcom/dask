@@ -960,10 +960,11 @@ Expr={expr}"""
         ----------
         window : int, str, offset
            Size of the moving window. This is the number of observations used
-           for calculating the statistic. When not using a ``DatetimeIndex``,
-           the window size must not be so large as to span more than one
-           adjacent partition. If using an offset or offset alias like '5D',
-           the data must have a ``DatetimeIndex``
+           for calculating the statistic. Integer windows of any size are
+           supported: the rows a window needs are gathered across as many
+           (possibly empty) partitions as necessary, so small partitions do
+           not require a repartition first. If using an offset or offset
+           alias like '5D', the data must have a ``DatetimeIndex``
         min_periods : int, default None
             Minimum number of observations in window required to have a value
             (otherwise result is NA).
@@ -978,6 +979,15 @@ Expr={expr}"""
         Returns
         -------
         a Rolling object on which to call a method to compute a statistic
+
+        Notes
+        -----
+        For an integer window of size ``W`` every output partition reads the
+        up to ``W - 1`` preceding (and, with ``center=True``, up to
+        ``W // 2`` following) rows it needs from neighboring partitions via
+        a linear chain of overlap tasks. A task therefore only ever holds
+        ``O(partition_size + W)`` rows and the graph grows linearly with the
+        number of partitions; no data is gathered onto a single partition.
         """
         from dask.dataframe.dask_expr._rolling import Rolling
 
@@ -1193,18 +1203,27 @@ Expr={expr}"""
         ``func``, ``map_overlap`` does the following:
 
         1. Prepend ``before`` rows to each partition ``i`` from the end of
-           partition ``i - 1``. The first partition has no rows prepended.
+           the partitions before it. The rows are gathered across as many
+           partitions as necessary, so partitions smaller than ``before``
+           (including empty ones) are bridged automatically. The first
+           partition only gets the rows that actually exist.
 
-        2. Append ``after`` rows to each partition ``i`` from the beginning of
-           partition ``i + 1``. The last partition has no rows appended.
+        2. Append ``after`` rows to each partition ``i`` from the beginning
+           of the following partitions, again spanning as many partitions as
+           needed. The last partition only gets the rows that actually exist.
 
         3. Apply ``func`` to each partition, passing in any extra ``args`` and
            ``kwargs`` if provided.
 
-        4. Trim ``before`` rows from the beginning of all but the first
-           partition.
+        4. Trim the rows that were prepended/appended as context again, so
+           exactly the original rows of each partition remain. Trimming uses
+           the number of context rows that were actually added, which may be
+           smaller than ``before``/``after`` at the global boundaries.
 
-        5. Trim ``after`` rows from the end of all but the last partition.
+        The context is propagated by a linear chain of overlap tasks, each
+        holding at most one partition plus ``before`` (resp. ``after``)
+        rows, so memory per task stays ``O(partition_size + before + after)``
+        and the graph grows linearly with the number of partitions.
 
         Examples
         --------
@@ -6321,6 +6340,7 @@ def map_overlap(
                     align_dataframes,
                     kwargs.pop("token", None),
                     kwargs,
+                    None,
                     *args,
                 )
             )
@@ -6337,6 +6357,7 @@ def map_overlap(
         align_dataframes,
         kwargs.pop("token", None),
         kwargs,
+        None,
         *args,
     )
     return new_collection(new_expr)

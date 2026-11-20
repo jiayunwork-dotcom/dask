@@ -708,20 +708,27 @@ def test_groupby_rolling():
 
     ddf = from_pandas(df, npartitions=8)
 
+    def flatten_group_index(df):
+        # dask returns the flat original index; drop pandas' group level
+        # and restore the original row order to compare
+        out = df.sort_index(level=-1)
+        out.index = out.index.droplevel(list(range(out.index.nlevels - 1)))
+        return out
+
     expected = df.groupby("group1").rolling("1D").sum()
     actual = ddf.groupby("group1").rolling("1D").sum()
 
-    assert_eq(expected, actual, check_divisions=False)
+    assert_eq(flatten_group_index(expected), actual, check_divisions=False)
 
     expected = df.groupby("group1").column1.rolling("1D").mean()
     actual = ddf.groupby("group1").column1.rolling("1D").mean()
 
-    assert_eq(expected, actual, check_divisions=False)
+    assert_eq(flatten_group_index(expected), actual, check_divisions=False)
 
     # Integer window w/ DateTimeIndex
     expected = df.groupby("group1").rolling(1).sum()
     actual = ddf.groupby("group1").rolling(1).sum()
-    assert_eq(expected, actual, check_divisions=False)
+    assert_eq(flatten_group_index(expected), actual, check_divisions=False)
 
     # Integer window w/o DateTimeIndex
     expected = df.reset_index(drop=True).groupby("group1").rolling(1).sum()
@@ -731,7 +738,7 @@ def test_groupby_rolling():
         .rolling(1)
         .sum()
     )
-    assert_eq(expected, actual, check_divisions=False)
+    assert_eq(flatten_group_index(expected), actual, check_divisions=False)
 
     # Integer window fails w/ datetime in groupby
     with pytest.raises(pd.errors.DataError, match="Cannot aggregate non-numeric type"):
@@ -754,6 +761,10 @@ def test_rolling_groupby_projection():
 
     actual = ddf.groupby("group1").rolling("1D").sum()["column1"]
     expected = df.groupby("group1").rolling("1D").sum()["column1"]
+    expected = expected.sort_index(level=-1)
+    expected.index = expected.index.droplevel(
+        list(range(expected.index.nlevels - 1))
+    )
 
     assert_eq(expected, actual, check_divisions=False)
 

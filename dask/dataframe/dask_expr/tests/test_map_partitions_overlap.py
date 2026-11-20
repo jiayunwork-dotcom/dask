@@ -106,11 +106,17 @@ def test_map_overlap_raises():
     pdf = pd.DataFrame(1, index=idx, columns=["a"])
     df = from_pandas(pdf, npartitions=2)
 
-    with pytest.raises(NotImplementedError, match="is less than"):
-        df.map_overlap(func, before=5, after=0).compute()
+    # Integer context larger than a single partition is gathered across
+    # as many partitions as needed instead of raising.
+    # Partitions are [1, 1, 1] and [1, 1]; func adds the length of the
+    # combined (context + partition) frame to every row.
+    result = df.map_overlap(func, before=5, after=0)
+    expected = pd.DataFrame([4, 4, 4, 6, 6], index=idx, columns=["a"])
+    assert_eq(result, expected)
 
-    with pytest.raises(NotImplementedError, match="is less than"):
-        df.map_overlap(func, before=0, after=5).compute()
+    result = df.map_overlap(func, before=0, after=5)
+    expected = pd.DataFrame([6, 6, 6, 3, 3], index=idx, columns=["a"])
+    assert_eq(result, expected)
 
     with pytest.raises(NotImplementedError, match="is less than"):
         df.map_overlap(func, before=0, after="5D").compute()
@@ -202,9 +208,9 @@ def test_map_overlap_errors(df):
     with pytest.raises(ValueError):
         df.map_overlap(func, 0, -5, 0, 2, c=2)
 
-    # Partition size < window size
-    with pytest.raises(NotImplementedError):
-        df.map_overlap(func, 0, 100, 0, 100, c=2).compute()
+    # Context larger than any partition no longer requires a repartition
+    res = df.map_overlap(func, 0, 100, 0, 100, c=2)
+    assert_eq(res, df)
 
     # Timedelta offset with non-datetime
     with pytest.raises(TypeError):

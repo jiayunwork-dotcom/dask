@@ -215,9 +215,9 @@ def test_map_overlap_errors():
     with pytest.raises(ValueError):
         ddf.map_overlap(shifted_sum, 0, -5, 0, 2, c=2)
 
-    # Partition size < window size
-    with pytest.raises(NotImplementedError):
-        ddf.map_overlap(shifted_sum, 0, 100, 0, 100, c=2).compute()
+    # Context larger than any partition is gathered across partitions
+    res = ddf.map_overlap(shifted_sum, 0, 100, 0, 100, c=2)
+    assert_eq(res, shifted_sum(df, 0, 100, c=2))
 
     # Timedelta offset with non-datetime
     with pytest.raises(TypeError):
@@ -332,8 +332,9 @@ def test_rolling_partition_size():
     for obj, dobj in [(df, ddf), (df[0], ddf[0])]:
         assert_eq(obj.rolling(10).mean(), dobj.rolling(10).mean())
         assert_eq(obj.rolling(11).mean(), dobj.rolling(11).mean())
-        with pytest.raises(NotImplementedError):
-            dobj.rolling(12).mean().compute()
+        # Windows larger than a partition are gathered across partitions
+        assert_eq(obj.rolling(12).mean(), dobj.rolling(12).mean())
+        assert_eq(obj.rolling(50).mean(), dobj.rolling(50).mean())
 
 
 def test_time_rolling_constructor():
@@ -497,12 +498,19 @@ def test_groupby_rolling():
 
     ddf = dd.from_pandas(df, npartitions=8)
 
+    def flatten_group_index(df):
+        # dask returns the flat original index; drop pandas' group level
+        # and restore the original row order to compare
+        out = df.sort_index(level=-1)
+        out.index = out.index.droplevel(list(range(out.index.nlevels - 1)))
+        return out
+
     expected = df.groupby("group1").rolling("15D").sum()
     actual = ddf.groupby("group1").rolling("15D").sum()
 
-    assert_eq(expected, actual, check_divisions=False)
+    assert_eq(flatten_group_index(expected), actual, check_divisions=False)
 
     expected = df.groupby("group1").column1.rolling("15D").mean()
     actual = ddf.groupby("group1").column1.rolling("15D").mean()
 
-    assert_eq(expected, actual, check_divisions=False)
+    assert_eq(flatten_group_index(expected), actual, check_divisions=False)

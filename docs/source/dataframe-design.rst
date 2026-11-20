@@ -154,3 +154,50 @@ for operations that either don't reduce the number of rows very much.
 
    result = df.groupby('id').value.nunique()
    result.npartitions  # returns same as df.npartitions
+
+
+.. _dataframe-design-windows:
+
+Rolling windows and overlapping partitions
+------------------------------------------
+
+Row-based (integer) rolling windows and :meth:`DataFrame.map_overlap` share
+rows between partitions so that every window sees the rows it needs, no
+matter how the data is partitioned.  You do not need to repartition first:
+if a partition holds fewer rows than the window needs — including none at
+all — the missing context is gathered from as many neighboring partitions
+as necessary.
+
+.. code-block:: python
+
+   >>> df.x.rolling(1000, min_periods=1).mean()      # windows span partitions
+   >>> df.groupby('id').x.rolling(20).sum()          # per-group windows
+   >>> df.map_overlap(func, before=100, after=50)    # explicit context
+
+For grouped rolling, the window of a row only ever contains earlier rows
+*of the same group*, counted in the original row order.  A group that
+disappears for many partitions and shows up again later still gets its true
+preceding rows.  The result keeps the flat original index (pandas would add
+the group key as an extra index level) and every row stays in its original
+partition.
+
+The context is propagated by a linear chain of small overlap tasks: each
+task hands the last ``window - 1`` rows — per group for grouped rolling —
+to the next one.  This has a few consequences worth knowing:
+
+* Memory per task is bounded by one partition plus the context it needs:
+  ``O(partition_size + window)`` rows for plain rolling and
+  ``O(partition_size + n_groups * window)`` for grouped rolling.  These do
+  not grow with the number of partitions or with the length of the history,
+  so fixed small windows never accumulate data on a single task.
+* The task graph grows linearly with the number of partitions (a constant
+  number of tasks per partition), not quadratically.
+* The chain is sequential, so the critical path of the graph is
+  proportional to the number of partitions.  The chain tasks are cheap
+  (they only carry context rows), but with very many partitions a
+  coarser partitioning reduces this depth as well as scheduler overhead.
+* Every input partition is read a small constant number of times (once per
+  direction of context and once for its own output).
+
+Time-based windows (e.g. ``df.rolling('5D')``) keep working as before and
+use the known divisions to find their context instead.

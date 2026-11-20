@@ -2153,11 +2153,21 @@ Please provide `meta` if the result is unexpected.
             on each partition (plus some overlap). This means that the output has the
             same shape and number of partitions as the original.
 
+            For integer windows the overlap is exact and group-aware: every
+            partition receives up to ``window - 1`` preceding rows *of the
+            same group* (and, with ``center=True``, up to ``window // 2``
+            following ones), gathered across as many partitions as needed.
+            A group that disappears for many partitions and reappears later
+            still gets its true preceding rows. Each overlap task carries at
+            most ``O(groups * window)`` context rows, so memory does not grow
+            with the number of partitions or the length of the history.
+
         Parameters
         ----------
-        window : str, offset
+        window : int, str, offset
            Size of the moving window. This is the number of observations used
-           for calculating the statistic. Data must have a ``DatetimeIndex``
+           for calculating the statistic. When using an offset or offset
+           alias like '5D', the data must have a ``DatetimeIndex``
         min_periods : int, default None
             Minimum number of observations in window required to have a value
             (otherwise result is NA).

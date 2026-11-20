@@ -191,7 +191,11 @@ def test_rolling_raises():
     pytest.raises(ValueError, lambda: ddf.rolling(-1))
     pytest.raises(ValueError, lambda: ddf.rolling(3, min_periods=1.2))
     pytest.raises(ValueError, lambda: ddf.rolling(3, min_periods=-2))
-    pytest.raises(NotImplementedError, lambda: ddf.rolling(100).mean().compute())
+    # A window larger than any partition (or the whole frame) no longer
+    # raises; the result follows pandas' min_periods semantics instead.
+    result = ddf.rolling(100).mean()
+    expected = df.rolling(100).mean()
+    assert_eq(result, expected)
 
 
 def test_time_rolling_constructor(df):

@@ -44,7 +44,13 @@ from dask.dataframe.dask_expr._util import (
     _tokenize_partial,
 )
 from dask.dataframe.dispatch import make_meta, meta_nonempty
-from dask.dataframe.rolling import CombinedOutput, _head_timedelta, overlap_chunk
+from dask.dataframe.rolling import (
+    CombinedOutput,
+    _head_timedelta,
+    _head_with_context,
+    _tail_with_context,
+    overlap_chunk,
+)
 from dask.dataframe.shuffle import drop_overlap, get_overlap
 from dask.dataframe.utils import (
     clear_known_categories,
@@ -888,6 +894,7 @@ class MapOverlapAlign(Expr):
         "align_dataframes",
         "token",
         "kwargs",
+        "grouper",
     ]
     _defaults = {
         "meta": None,
@@ -897,6 +904,7 @@ class MapOverlapAlign(Expr):
         "clear_divisions": False,
         "align_dataframes": False,
         "token": None,
+        "grouper": None,
     }
 
     @functools.cached_property
@@ -934,6 +942,7 @@ class MapOverlapAlign(Expr):
             self.align_dataframes,
             self.token,
             self.kwargs,
+            self.grouper,
             *args[1:],
         )
 
@@ -951,6 +960,7 @@ class MapOverlap(MapPartitions):
         "align_dataframes",
         "token",
         "kwargs",
+        "grouper",
     ]
     _defaults: dict = {
         "meta": None,
@@ -960,6 +970,7 @@ class MapOverlap(MapPartitions):
         "clear_divisions": False,
         "align_dataframes": False,
         "token": None,
+        "grouper": None,
     }
 
     @functools.cached_property
@@ -994,6 +1005,14 @@ class MapOverlap(MapPartitions):
         )
 
     @functools.cached_property
+    def grouper(self):
+        # Subclasses (e.g. ``Shift``/``FFill``) define their own
+        # ``_parameters`` without a ``grouper`` entry.
+        if "grouper" in self._parameters:
+            return self.operand("grouper")
+        return None
+
+    @functools.cached_property
     def before(self):
         before = self.operand("before")
         if isinstance(before, str):
@@ -1008,7 +1027,9 @@ class MapOverlap(MapPartitions):
         return after
 
     def _lower(self):
-        overlapped = CreateOverlappingPartitions(self.frame, self.before, self.after)
+        overlapped = CreateOverlappingPartitions(
+            self.frame, self.before, self.after, self.grouper
+        )
 
         return MapPartitions(
             overlapped,
@@ -1028,7 +1049,22 @@ class MapOverlap(MapPartitions):
 
 
 class CreateOverlappingPartitions(Expr):
-    _parameters = ["frame", "before", "after"]
+    """Materialize the rows that each partition shares with its neighbors.
+
+    For integer ``before``/``after`` the context is exact: a linear chain of
+    tasks propagates the last ``before`` rows (resp. first ``after`` rows) of
+    all preceding (resp. following) partitions, so arbitrarily small or empty
+    partitions are bridged without repartitioning.  When ``grouper`` is a
+    dict of ``pandas.groupby`` keyword arguments, the context is gathered
+    *per group*: each chain state carries the last ``before`` (first
+    ``after``) rows of every group, which is what grouped rolling windows
+    need.  Each chain task holds at most one partition plus ``before``
+    (``G * before`` for grouped) rows, and the graph grows linearly with the
+    number of partitions.
+    """
+
+    _parameters = ["frame", "before", "after", "grouper"]
+    _defaults = {"grouper": None}
 
     @functools.cached_property
     def _meta(self):
@@ -1045,10 +1081,22 @@ class CreateOverlappingPartitions(Expr):
         if self.before:
             prevs.append(None)
             if isinstance(self.before, numbers.Integral):
+                # Chain the exact tail context through all previous
+                # partitions: state_i = last ``before`` rows (per group)
+                # of partitions 0..i-1.
                 before = self.before
+                state = None
                 for i in range(self.frame.npartitions - 1):
-                    dsk[(name_prepend, i)] = (M.tail, (self.frame._name, i), before)
-                    prevs.append((name_prepend, i))
+                    key = (name_prepend, i)
+                    dsk[key] = (
+                        _tail_with_context,
+                        state,
+                        (self.frame._name, i),
+                        before,
+                        self.grouper,
+                    )
+                    state = key
+                    prevs.append(key)
             elif isinstance(self.before, datetime.timedelta):
                 # Assumes monotonic (increasing?) index
                 divs = pd.Series(self.frame.divisions)
@@ -1095,10 +1143,23 @@ class CreateOverlappingPartitions(Expr):
         name_append = "overlap-append-" + self._name
         if self.after:
             if isinstance(self.after, numbers.Integral):
+                # Chain the exact head context backwards through all
+                # following partitions: state_i = first ``after`` rows
+                # (per group) of partitions i+1..n-1.
                 after = self.after
-                for i in range(1, self.frame.npartitions):
-                    dsk[(name_append, i)] = (M.head, (self.frame._name, i), after)
-                    nexts.append((name_append, i))
+                state = None
+                nexts.extend([None] * self.frame.npartitions)  # type: ignore
+                for i in range(self.frame.npartitions - 2, -1, -1):
+                    key = (name_append, i)
+                    dsk[key] = (  # type: ignore
+                        _head_with_context,
+                        (self.frame._name, i + 1),
+                        state,
+                        after,
+                        self.grouper,
+                    )
+                    state = key
+                    nexts[i] = key
             else:
                 # We don't want to look at the divisions, so take twice the step and
                 # validate later.
@@ -1112,7 +1173,7 @@ class CreateOverlappingPartitions(Expr):
                     )
                     nexts.append((name_append, i))
 
-            nexts.append(None)  # type: ignore
+                nexts.append(None)  # type: ignore
 
         else:
             nexts.extend([None] * self.frame.npartitions)  # type: ignore
@@ -1147,29 +1208,23 @@ def _combined_parts(prev_part, current_part, next_part, before, after):
         "to increase the partition size."
     )
 
-    if prev_part is not None:
-        if isinstance(before, numbers.Integral):
-            if prev_part.shape[0] != before:
-                raise NotImplementedError(msg)
-        else:
-            prev_part_input = prev_part
-            prev_part = _tail_timedelta(current_part, [prev_part], before)
-            if (
-                len(prev_part_input) == len(prev_part)
-                and len(prev_part_input) > 0
-                and not isinstance(before, datetime.timedelta)
-            ):
-                raise NotImplementedError(msg)
+    if prev_part is not None and not isinstance(before, numbers.Integral):
+        # Integer context is gathered exactly by the chain of overlap
+        # tasks; timedelta context may still need to be refined here.
+        prev_part_input = prev_part
+        prev_part = _tail_timedelta(current_part, [prev_part], before)
+        if (
+            len(prev_part_input) == len(prev_part)
+            and len(prev_part_input) > 0
+            and not isinstance(before, datetime.timedelta)
+        ):
+            raise NotImplementedError(msg)
 
-    if next_part is not None:
-        if isinstance(after, numbers.Integral):
-            if next_part.shape[0] != after:
-                raise NotImplementedError(msg)
-        else:
-            next_part_input = next_part
-            next_part = _head_timedelta(current_part, next_part, after)
-            if len(next_part_input) == len(next_part) and len(next_part_input) > 0:
-                raise NotImplementedError(msg)
+    if next_part is not None and not isinstance(after, numbers.Integral):
+        next_part_input = next_part
+        next_part = _head_timedelta(current_part, next_part, after)
+        if len(next_part_input) == len(next_part) and len(next_part_input) > 0:
+            raise NotImplementedError(msg)
 
     parts = [p for p in (prev_part, current_part, next_part) if p is not None]
     combined = methods.concat(parts)

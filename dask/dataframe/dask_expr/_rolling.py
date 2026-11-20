@@ -38,7 +38,12 @@ def _rolling_agg(
     rolling = frame.rolling(window, **kwargs)
     result = getattr(rolling, how)(*how_args, **(how_kwargs or {}))
     if groupby_kwargs is not None:
-        return result.sort_index(level=-1)
+        # Restore the original row order and hand back a flat index: the
+        # group level(s) that pandas puts in front of the original index
+        # are dropped again so that every row lands in its original
+        # partition with its original index.
+        result = result.sort_index(level=-1)
+        result.index = result.index.droplevel(list(range(result.index.nlevels - 1)))
     return result
 
 
@@ -111,6 +116,26 @@ class RollingReduction(Expr):
             or self.frame.npartitions == 1
         )
 
+    @functools.cached_property
+    def _grouper(self):
+        """Groupby kwargs to gather per-group overlap context, or None.
+
+        Only integer windows grouped by existing column(s) can share the
+        exact context chain; anything else keeps the previous behavior.
+        """
+        if self.groupby_kwargs is None or not isinstance(self.window, Integral):
+            return None
+        by = self.groupby_kwargs.get("by")
+        by = by if isinstance(by, list) else [by]
+        if not by or not all(isinstance(b, str) for b in by):
+            return None
+        if not all(b in self.frame.columns for b in by):
+            return None
+        return {
+            key: self.groupby_kwargs.get(key)
+            for key in ("by", "observed", "sort", "dropna")
+        } | {"by": by}
+
     def _lower(self):
         if self._is_blockwise_op:
             return RollingAggregation(
@@ -127,7 +152,7 @@ class RollingReduction(Expr):
         if self.kwargs.get("center"):
             before = self.window // 2
             after = self.window - before - 1
-        elif not isinstance(self.window, int):
+        elif not isinstance(self.window, Integral):
             before = pd.Timedelta(self.window)
             after = 0
         else:
@@ -150,6 +175,7 @@ class RollingReduction(Expr):
                 groupby_kwargs=self.groupby_kwargs,
                 groupby_slice=self.groupby_slice,
             ),
+            grouper=self._grouper,
         )
 
 
