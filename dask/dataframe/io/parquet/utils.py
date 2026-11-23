@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import operator
 import warnings
+from functools import reduce
+from urllib.parse import unquote
 
 import numpy as np
 import pandas as pd
@@ -290,6 +293,237 @@ class Engine:
         Otherwise, None is returned.
         """
         raise NotImplementedError()
+
+
+def filters_to_expression(filters, propagate_null=False, nan_is_null=True):
+    """Convert user-level ``filters`` into a PyArrow expression.
+
+    This is a null-aware version of ``pyarrow.parquet.filters_to_expression``.
+    Unlike the upstream helper, it supports the ``"is"``/``"is not"``
+    operators (used for ``is None`` / ``is not None`` predicates), as well
+    as the null-propagation behavior expected of ``!=``/``not in``.
+
+    Predicates can be expressed in disjunctive normal form (DNF): the
+    innermost tuples are combined with AND, and the outer-most list is
+    combined with OR.
+    """
+    from pyarrow import dataset as pa_ds
+
+    if isinstance(filters, pa_ds.Expression):
+        return filters
+
+    if filters is not None:
+        if len(filters) == 0 or any(len(f) == 0 for f in filters):
+            raise ValueError("Malformed filters")
+        if isinstance(filters[0][0], str):
+            # We have encountered the situation where we have one nesting
+            # level too few: [(,,), ..] instead of [[(,,), ..]]
+            filters = [filters]
+
+    def convert_single_predicate(col, op, val):
+        field = pa_ds.field(col)
+
+        # Handle null-value comparison
+        if val is None or (nan_is_null and val is np.nan):
+            if op == "is":
+                return field.is_null(nan_is_null=nan_is_null)
+            elif op == "is not":
+                return ~field.is_null(nan_is_null=nan_is_null)
+            else:
+                raise ValueError(
+                    f'"{(col, op, val)}" is not a supported predicate '
+                    f'Please use "is" or "is not" for null comparison.'
+                )
+
+        if op == "=" or op == "==":
+            expr = field == val
+        elif op == "!=":
+            expr = field != val
+        elif op == "<":
+            expr = field < val
+        elif op == ">":
+            expr = field > val
+        elif op == "<=":
+            expr = field <= val
+        elif op == ">=":
+            expr = field >= val
+        elif op == "in":
+            expr = field.isin(val)
+        elif op == "not in":
+            expr = ~field.isin(val)
+        else:
+            raise ValueError(
+                f'"{(col, op, val)}" is not a valid operator in predicates.'
+            )
+
+        # (Optionally) Avoid null-value propagation
+        if not propagate_null and op in ("!=", "not in"):
+            return field.is_null(nan_is_null=nan_is_null) | expr
+        return expr
+
+    disjunction_members = []
+
+    for conjunction in filters:
+        conjunction_members = [
+            convert_single_predicate(col, op, val) for col, op, val in conjunction
+        ]
+
+        disjunction_members.append(reduce(operator.and_, conjunction_members))
+
+    return reduce(operator.or_, disjunction_members)
+
+
+def _is_partition_segment(segment):
+    """Return True if a path segment looks like a Hive ``key=value``."""
+    if "=" not in segment:
+        return False
+    key = segment.split("=", 1)[0]
+    return bool(key)
+
+
+def _partition_base_dir(file_paths, sep="/"):
+    """Infer the directory a Hive partition path is relative to.
+
+    For a *list* of data files (or a single data file), PyArrow parses all
+    ancestor directories that look like ``key=value`` until it reaches a
+    "plain" directory.  This helper reproduces that rule, but does so once
+    up front so that every file in the dataset is interpreted consistently
+    (and so that the result can be cached and passed down to read tasks).
+    """
+    if not file_paths:
+        return ""
+    parts = [p.split(sep) for p in file_paths]
+    common = list(parts[0][:-1])  # drop the file name itself
+    for other in parts[1:]:
+        other_dir = other[:-1]
+        i = 0
+        while i < len(common) and i < len(other_dir) and common[i] == other_dir[i]:
+            i += 1
+        common = common[:i]
+    while common and _is_partition_segment(common[-1]):
+        common = common[:-1]
+    return sep.join(common)
+
+
+def _partition_names_from_paths(file_paths, base, sep="/"):
+    """Discover ordered Hive partition-column names from data paths."""
+    names = []
+    for path in file_paths:
+        rel = path[len(base) + 1 :] if base and path.startswith(base + sep) else path
+        for segment in rel.split(sep)[:-1]:
+            if _is_partition_segment(segment):
+                name = segment.split("=", 1)[0]
+                if name not in names:
+                    names.append(name)
+    return names
+
+
+def _relative_partition_path(path, base, sep="/"):
+    if base and path.startswith(base + sep):
+        return path[len(base) + 1 :]
+    return path
+
+
+def _partition_segment_values(path, base, names, sep="/"):
+    """Extract decoded partition values for ``names`` from a data path.
+
+    Returns a dict mapping each partition-column name to the decoded value
+    found in the path (``None`` for the conventional null label, and
+    ``None`` for names that do not appear in the path).
+    """
+    rel = _relative_partition_path(path, base, sep)
+    result = {}
+    for segment in rel.split(sep)[:-1]:
+        if "=" not in segment:
+            continue
+        key, value = segment.split("=", 1)
+        if not key:
+            continue
+        if value == "__HIVE_DEFAULT_PARTITION__":
+            result[key] = None
+        else:
+            result[key] = unquote(value)
+    return {name: result.get(name, None) for name in names}
+
+
+def _infer_hive_type(values):
+    """Infer the value type for a Hive partition column.
+
+    This mirrors ``pyarrow.dataset``'s Hive discovery: all non-null values
+    are parsed as ``int32`` when possible, and ``string`` otherwise.  An
+    all-null column has no information to infer from, so it defaults to
+    ``string`` (which callers can override with an explicit Arrow schema).
+
+    Returns ``(pyarrow_type, parsed_values)``.
+    """
+    import pyarrow as pa
+
+    nonnull = [v for v in values if v is not None]
+    if not nonnull:
+        return pa.string(), None
+    try:
+        parsed = pa.array(nonnull, type=pa.string()).cast(pa.int32())
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+        return pa.string(), None
+    if parsed.null_count:
+        return pa.string(), None
+    return pa.int32(), parsed.to_pylist()
+
+
+def build_hive_partitioning(file_paths, base, names, sep="/"):
+    """Build an explicit ``HivePartitioning`` for a known set of partitions.
+
+    Passing an explicit schema (rather than relying on PyArrow's inference)
+    makes discovery robust to files that only contain null partition values
+    (i.e. there is no non-null segment to infer a type from).  The
+    per-column dictionaries are also populated, so Dask can build
+    categorical metadata without a second scan.
+
+    Returns ``(partitioning, categories)`` where ``categories`` maps each
+    partition name to an Arrow array of its sorted, non-null values.
+    """
+    import pyarrow as pa
+
+    from pyarrow import dataset as pa_ds
+
+    values_by_name = {name: [] for name in names}
+    for path in file_paths:
+        seg = _partition_segment_values(path, base, names, sep=sep)
+        for name in names:
+            values_by_name[name].append(seg[name])
+
+    fields = []
+    dictionaries = {}
+    for name in names:
+        values = values_by_name[name]
+        type_, parsed = _infer_hive_type(values)
+        fields.append(pa.field(name, type_))
+        if parsed is not None:
+            # Use the coerced (e.g. int32) values, not the raw strings
+            values = [None if v is None else parsed[i] for i, v in enumerate(values)]
+        nonnull = [v for v in values if v is not None]
+        if nonnull:
+            try:
+                unique = sorted({_python_scalar(v) for v in nonnull})
+            except TypeError:
+                unique = nonnull
+            dictionaries[name] = pa.array(unique, type=type_)
+        else:
+            dictionaries[name] = pa.array([], type=type_)
+
+    partitioning = pa_ds.HivePartitioning(
+        pa.schema(fields),
+        dictionaries=dictionaries,
+        null_fallback="__HIVE_DEFAULT_PARTITION__",
+    )
+    return partitioning, dictionaries
+
+
+def _python_scalar(value):
+    """Convert a ``pyarrow.Scalar`` to its Python equivalent (or pass through)."""
+    if hasattr(value, "as_py"):
+        return value.as_py()
+    return value
 
 
 def _normalize_index_columns(user_columns, data_columns, user_index, data_index):

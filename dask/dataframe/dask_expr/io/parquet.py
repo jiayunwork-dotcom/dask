@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import itertools
 import operator
 import os
@@ -58,7 +59,13 @@ from dask.dataframe.io.parquet.core import (
     set_index_columns,
     sorted_columns,
 )
-from dask.dataframe.io.parquet.utils import _split_user_options
+from dask.dataframe.io.parquet.utils import (
+    _partition_base_dir,
+    _partition_names_from_paths,
+    _split_user_options,
+    build_hive_partitioning,
+    filters_to_expression,
+)
 from dask.dataframe.io.utils import _is_local_fs
 from dask.delayed import delayed
 from dask.tokenize import _tokenize_deterministic, normalize_token, tokenize
@@ -1000,7 +1007,8 @@ class ReadParquetPyarrowFS(ReadParquet):
     @cached_property
     def _dataset_info(self):
         if rv := self.operand("_dataset_info_cache"):
-            return rv
+            if rv.get("filters") == self.filters:
+                return rv
         dataset_info = {}
 
         path_normalized = self.normalized_path
@@ -1030,48 +1038,100 @@ class ReadParquetPyarrowFS(ReadParquet):
         # inhomogeneous datasets already without reading any further data
 
         metadata_file = False
-        checksum = None
         dataset = None
-        if not self.ignore_metadata_file:
-            all_files = sorted(
-                all_files, key=lambda x: x.base_name.endswith("_metadata")
-            )
-            if all_files[-1].base_name.endswith("_metadata"):
-                metadata_file = all_files.pop()
-                checksum = tokenize(metadata_file)
-                dataset = pa_ds.parquet_dataset(
-                    metadata_file.path,
-                    filesystem=self.fs,
+        partition_names = []
+        partition_categories = {}
+        partition_base_dir = None
+        partitioning = None
+        all_files = sorted(
+            all_files,
+            key=lambda x: (x.base_name.endswith("_metadata"), natural_sort_key(x.path)),
+        )
+        if (
+            not self.ignore_metadata_file
+            and all_files
+            and all_files[-1].base_name.endswith("_metadata")
+        ):
+            metadata_file = all_files.pop()
+
+        file_paths = [fi.path for fi in all_files]
+
+        # Discover the Hive partition-column names and types explicitly.
+        # PyArrow's inferred Hive partitioning cannot type a column whose
+        # directories only contain null values, so we build an explicit
+        # ``HivePartitioning`` object.  Fragments created from this dataset
+        # carry decoded partition expressions, which lets the same object
+        # support pruning, row filtering, and partitioning-column assembly.
+        if file_paths:
+            # Mirror the fsspec reader's base-directory rule: when the user
+            # passed a directory, partition segments are interpreted
+            # relative to that directory (its own name is not a partition,
+            # even if it looks like ``key=value``).  For a list of files we
+            # infer a common base instead.
+            base = None
+            if len(path_normalized) == 1:
+                info = self.fs.get_file_info(path_normalized[0])
+                if info.type == pa.fs.FileType.Directory:
+                    base = self.fs.normalize_path(path_normalized[0])
+            if base is None:
+                base = _partition_base_dir(file_paths)
+            names = _partition_names_from_paths(file_paths, base)
+            if names:
+                partitioning, cats_by_name = build_hive_partitioning(
+                    file_paths, base, names
                 )
-                dataset_info["using_metadata_file"] = True
-                dataset_info["fragments"] = [
-                    FragmentWrapper(frag, self.fs) for frag in dataset.get_fragments()
-                ]
-                dataset_info["file_sizes"] = [None] * len(dataset_info["fragments"])
+                partition_names = names
+                partition_categories = cats_by_name
+                partition_base_dir = base
 
-        if checksum is None:
-            checksum = tokenize(all_files)
-            dataset_info["file_sizes"] = [fi.size for fi in all_files]
+        checksum = tokenize(
+            tokenize(all_files),
+            metadata_file if metadata_file is not False else None,
+            partition_names,
+            tokenize(partition_categories) if partition_categories else None,
+            tokenize(partitioning) if partitioning is not None else None,
+        )
         dataset_info["checksum"] = checksum
-        if dataset is None:
-            import pyarrow.parquet as pq
+        dataset_info["partition_names"] = partition_names
+        dataset_info["partition_categories"] = partition_categories
+        dataset_info["partition_base_dir"] = partition_base_dir
 
-            dataset = pq.ParquetDataset(
-                # TODO Just pass all_files once
-                # https://github.com/apache/arrow/pull/40143 is available to
-                # reduce latency
-                [fi.path for fi in all_files],
+        from pyarrow import dataset as pa_ds
+        if metadata_file is not False:
+            dataset = pa_ds.parquet_dataset(
+                metadata_file.path,
                 filesystem=self.fs,
-                filters=self.filters,
+                partitioning=partitioning,
+                partition_base_dir=partition_base_dir,
+            )
+            dataset_info["using_metadata_file"] = True
+            dataset_info["all_files"] = all_files
+            dataset_info["file_sizes"] = [None] * len(all_files)
+        else:
+            dataset = pa_ds.dataset(
+                file_paths,
+                filesystem=self.fs,
+                format=pa_ds.ParquetFileFormat(),
+                partitioning=partitioning,
+                partition_base_dir=partition_base_dir,
             )
             dataset_info["using_metadata_file"] = False
-            dataset_info["fragments"] = [
-                FragmentWrapper(frag, self.fs) for frag in dataset.fragments
-            ]
             dataset_info["all_files"] = all_files
+            dataset_info["file_sizes"] = [fi.size for fi in all_files]
 
+        # Store *unfiltered* fragments.  Filtering happens per-expression in
+        # ``fragments_unsorted`` so that a cached dataset_info remains valid
+        # when the caller changes the filter (or projection) later on.
+        dataset_info["fragments"] = [
+            FragmentWrapper(frag, self.fs) for frag in dataset.get_fragments()
+        ]
+        dataset_info["dataset"] = dataset
         dataset_info["schema"] = dataset.schema
-        dataset_info["base_meta"] = dataset.schema.empty_table().to_pandas()
+        dataset_info["base_meta"] = _partition_base_meta(
+            dataset.schema, partition_names, partition_categories
+        )
+        # Record the filters this info was built for (see `_dataset_info`).
+        dataset_info["filters"] = self.filters
         self._dataset_info_cache = dataset_info
         return dataset_info
 
@@ -1087,9 +1147,13 @@ class ReadParquetPyarrowFS(ReadParquet):
         argsort
         """
         if self.calculate_divisions and self.index is not None:
+            fragments = self.fragments_unsorted
+            if not len(fragments):
+                return (None, None), None
             index_name = self.index.name
             return _divisions_from_statistics(self.aggregated_statistics, index_name)
-        return tuple([None] * (len(self.fragments_unsorted) + 1)), None
+        n = max(len(self.fragments_unsorted), 1)
+        return tuple([None] * (n + 1)), None
 
     def all_statistics_known(self) -> bool:
         """Whether all statistics have been fetched from remote store"""
@@ -1104,6 +1168,10 @@ class ReadParquetPyarrowFS(ReadParquet):
         return self._division_from_stats[0]
 
     def _tune_up(self, parent):
+        if len(self.fragments_unsorted) == 0:
+            # Nothing to fuse (empty dataset or filter matched no files).
+            # Keep at least one (empty) output partition.
+            return
         if self._fusion_compression_factor >= 1:
             return
         if isinstance(parent, FusedParquetIO):
@@ -1133,20 +1201,24 @@ class ReadParquetPyarrowFS(ReadParquet):
         --------
         ReadParquetPyarrowFS.fragments
         """
+        fragments = self._dataset_info["fragments"]
         if self.filters is not None:
-            filter_expression = pq.filters_to_expression(self.filters)
-            frags = [frag.fragment for frag in self._dataset_info["fragments"]]
-            ds = pyarrow.dataset.FileSystemDataset(
-                frags,
-                self._dataset_info["schema"],
-                format=frags[0].format,
-                filesystem=self.fs,
-            )
-            return np.array(list(ds.get_fragments(filter=filter_expression)))
-        return np.array([frag.fragment for frag in self._dataset_info["fragments"]])
+            expr = filters_to_expression(self.filters)
+            # Prune file fragments with the (partition-aware) filter
+            # expression.  Predicate evaluation is performed on the decoded
+            # logical partition values, so e.g. ``('part', '==', 'a/b')``
+            # selects the ``part=a%2Fb`` directory.
+            dataset = self._dataset_info["dataset"]
+            selected = list(dataset.get_fragments(expr))
+            return np.array(selected)
+        return np.array([frag.fragment for frag in fragments])
 
     @property
     def _fusion_compression_factor(self):
+        if len(self.fragments_unsorted) == 0:
+            # No files matched the (partition) filter, or the dataset is
+            # empty. Nothing to fuse.
+            return 1
         approx_stats = self.approx_statistics()
         total_uncompressed = 0
         after_projection = 0
@@ -1163,6 +1235,19 @@ class ReadParquetPyarrowFS(ReadParquet):
         return max(after_projection / total_uncompressed, 0.001)
 
     def _filtered_task(self, name: Key, index: int) -> Task:
+        if len(self.fragments) == 0:
+            # No files matched the filter (or the dataset is empty). Emit a
+            # single empty partition, matching the directory-based reader.
+            columns = self.columns.copy()
+            index_name = self.index.name
+            if index_name:
+                if columns is None:
+                    columns = list(self._meta.columns)
+                columns.append(index_name)
+            tsk = Task(name, identity, self._meta, _data_producer=True)
+            if self._series:
+                return Task(name, operator.getitem, tsk, self.columns[0])
+            return tsk
         columns = self.columns.copy()
         index_name = self.index.name
         if self.index is not None:
@@ -1191,8 +1276,27 @@ class ReadParquetPyarrowFS(ReadParquet):
             arrow_to_pandas=self.arrow_to_pandas,
             dtype_backend=self.kwargs.get("dtype_backend"),
             pyarrow_strings_enabled=self.pyarrow_strings_enabled,
+            partition_dtypes=self._partition_dtypes,
             _data_producer=True,
         )
+
+    @functools.cached_property
+    def _partition_dtypes(self):
+        """Categorical dtypes for Hive partition columns.
+
+        Partition columns are stored as plain (string/int) physical types in
+        the dataset schema, but are exposed as categoricals (matching the
+        behavior of the directory-based reader).
+        """
+        result = {}
+        for name, values in self._dataset_info["partition_categories"].items():
+            if values is None or not len(values):
+                continue
+            categories = pd.Index(values.to_pandas()).dropna()
+            if not len(categories):
+                continue
+            result[name] = pd.CategoricalDtype(categories=categories)
+        return result
 
     @staticmethod
     def _fragment_to_table(fragment_wrapper, filters, columns, schema):
@@ -1202,7 +1306,7 @@ class ReadParquetPyarrowFS(ReadParquet):
         else:
             fragment = fragment_wrapper
         if isinstance(filters, list):
-            filters = pq.filters_to_expression(filters)
+            filters = filters_to_expression(filters)
         return fragment.to_table(
             schema=schema,
             columns=columns,
@@ -1228,7 +1332,12 @@ class ReadParquetPyarrowFS(ReadParquet):
 
     @staticmethod
     def _table_to_pandas(
-        table, index_name, arrow_to_pandas, dtype_backend, pyarrow_strings_enabled
+        table,
+        index_name,
+        arrow_to_pandas,
+        dtype_backend,
+        pyarrow_strings_enabled,
+        partition_dtypes=None,
     ):
         if arrow_to_pandas is None:
             arrow_to_pandas = {}
@@ -1247,6 +1356,10 @@ class ReadParquetPyarrowFS(ReadParquet):
             **arrow_to_pandas,
             ignore_metadata=True,
         )
+        if partition_dtypes:
+            for name, dtype in partition_dtypes.items():
+                if name in df.columns:
+                    df[name] = df[name].astype(dtype)
         if index_name is not None:
             df = df.set_index(index_name)
         return df
@@ -1312,7 +1425,13 @@ class ReadParquetFSSpec(ReadParquet):
     @property
     def _dataset_info(self):
         if rv := self.operand("_dataset_info_cache"):
-            return rv
+            # The cache is only valid if it was built for the current filter
+            # set. Simplification can substitute `filters` while leaving the
+            # cached operands in place, so stale plan entries must not be
+            # reused.
+            if rv.get("filters") == self.filters:
+                return rv
+        dataset_info = {}
         # Process and split user options
         (
             dataset_options,
@@ -1407,6 +1526,8 @@ class ReadParquetFSSpec(ReadParquet):
         dataset_info["index"] = index
         dataset_info["all_columns"] = all_columns
         dataset_info["calculate_divisions"] = self.calculate_divisions
+        # Record the filters this info was built for (see `_dataset_info`).
+        dataset_info["filters"] = self.filters
 
         dataset_token = tokenize(dataset_info)
         if dataset_token not in _cached_plan:
@@ -1501,6 +1622,27 @@ class ReadParquetFSSpec(ReadParquet):
 #
 # Helper functions
 #
+
+
+def _partition_base_meta(schema, partition_names, partition_categories):
+    """Build empty pandas meta with categorical partition columns.
+
+    Partition columns with no known (non-null) values are left at their
+    physical schema dtype: there is nothing to use as categorical categories,
+    and a plain string/int column is still a valid representation of an
+    all-null partition.
+    """
+    base_meta = schema.empty_table().to_pandas()
+    for name in partition_names:
+        categorical = partition_categories.get(name)
+        if categorical is None or not len(categorical):
+            continue
+        categories = pd.Index(categorical.to_pandas()).dropna()
+        base_meta[name] = pd.Series(
+            pd.Categorical([], categories=categories),
+            index=base_meta.index,
+        )
+    return base_meta
 
 
 def _set_parquet_engine(engine=None, meta=None):

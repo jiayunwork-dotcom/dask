@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import itertools
 import json
-import operator
+import os
 import textwrap
 from collections import defaultdict
 from datetime import datetime
-from functools import reduce
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
@@ -27,11 +27,15 @@ from dask.dataframe.io.parquet.utils import (
     _get_aggregation_depth,
     _infer_split_row_groups,
     _normalize_index_columns,
+    _partition_base_dir,
+    _partition_names_from_paths,
     _process_open_file_options,
     _row_groups_to_parts,
     _set_gather_statistics,
     _set_metadata_task_size,
     _sort_and_analyze_paths,
+    build_hive_partitioning,
+    filters_to_expression,
 )
 from dask.dataframe.io.utils import _get_pyarrow_dtypes, _is_local_fs, _open_input_files
 from dask.dataframe.utils import clear_known_categories, pyarrow_strings_enabled
@@ -134,7 +138,11 @@ def _write_partitioned(
 
     md_list = []
     partition_keys = partition_keys[0] if len(partition_keys) == 1 else partition_keys
-    gb = data_df.groupby(partition_keys, dropna=False, observed=False)
+    # ``dropna=False`` keeps null-valued groups (written to the
+    # ``__HIVE_DEFAULT_PARTITION__`` directory).  ``observed=True`` means
+    # unused categories of a categorical key produce no (empty) directory,
+    # which is the conventional behavior for a Hive dataset.
+    gb = data_df.groupby(partition_keys, dropna=False, observed=True)
     for keys, subgroup in gb:
         if not isinstance(keys, tuple):
             keys = (keys,)
@@ -185,7 +193,11 @@ class PartitionObj:
 
     def __init__(self, name, keys):
         self.name = name
-        self.keys = pd.Index(keys.sort_values(), copy=False)
+        # ``keys`` may contain categories inferred from the directory names.
+        # Null is represented by the validity bitmap, not a category, so make
+        # sure we never build a categorical with a null category value.
+        keys = pd.Index(keys).dropna()
+        self.keys = keys.sort_values()
 
     def __dask_tokenize__(self):
         return tokenize(self.name, self.keys)
@@ -339,12 +351,134 @@ def _need_filtering(filters, partition_keys):
     return bool(filtered_cols - partition_cols)
 
 
+_HIVE_DEFAULT_PARTITION = "__HIVE_DEFAULT_PARTITION__"
+
+# Characters that are safe to leave unescaped in a Hive partition segment.
+# This matches the set used by ``pyarrow.dataset``'s Hive writer (RFC 3986
+# unreserved characters).  Everything else is percent-encoded so that a
+# standard Hive reader (e.g. pyarrow.dataset with ``partitioning="hive"``)
+# decodes the segment back to the original value exactly once.  Note that
+# "/" and "=" must be escaped: "/" would otherwise add a directory level,
+# and "=" would otherwise be re-parsed as a key/value separator.  "%" must
+# be escaped so that a value that already looks like an escape sequence
+# (e.g. "a%2Fb") is not decoded a second time.
+_HIVE_SEGMENT_SAFE = "-._~"
+
+
+def _hive_escape_segment(val):
+    """Percent-encode a Hive partition segment.
+
+    This mirrors the encoding used by ``pyarrow.dataset``'s Hive writer so
+    that Dask-written directories round-trip through any standard Hive
+    reader (not only Dask's own reader).
+    """
+    if isinstance(val, (pd.Timestamp, np.datetime64)):
+        val = str(val)
+    elif not isinstance(val, str):
+        val = str(val)
+    return quote(val, safe=_HIVE_SEGMENT_SAFE)
+
+
 def _hive_dirname(name, val):
-    # Simple utility to produce hive directory name.
-    # Note that "__HIVE_DEFAULT_PARTITION__" is the
-    # conventional "null" label in other platforms
-    val = "__HIVE_DEFAULT_PARTITION__" if pd.isna(val) else val
-    return f"{name}={val}"
+    # Produce a Hive directory name that round-trips through a standard
+    # Hive reader.  ``__HIVE_DEFAULT_PARTITION__`` is the conventional
+    # "null" label in other platforms, so null values use it verbatim.
+    if pd.isna(val):
+        return f"{name}={_HIVE_DEFAULT_PARTITION}"
+    return f"{name}={_hive_escape_segment(val)}"
+
+
+def _find_data_files(fs, root, parquet_file_extension):
+    """List the data files under ``root``, honoring ``parquet_file_extension``."""
+    found = fs.find(root)
+    if not parquet_file_extension:
+        # Match PyArrow's default ``ignore_prefixes`` behavior so that
+        # metadata files (e.g. ``_metadata``) are not treated as data.
+        return [
+            path
+            for path in found
+            if not os.path.basename(path).startswith((".", "_"))
+        ]
+    files = [path for path in found if path.endswith(parquet_file_extension)]
+    if found and not files:
+        raise ValueError(
+            "No files satisfy the `parquet_file_extension` criteria "
+            f"(files must end with {parquet_file_extension})."
+        )
+    return files
+
+
+def _resolve_hive_files(
+    paths,
+    fs,
+    ignore_metadata_file=False,
+    parquet_file_extension=(".parq", ".parquet", ".pq"),
+):
+    """Resolve reader inputs to a (possibly explicit) list of data files.
+
+    Returns ``(files, partition_base_dir, meta_path, valid_paths)``.
+
+    * ``files`` is a list of absolute data-file paths.
+    * ``partition_base_dir`` is the directory that Hive partition segments
+      in each path are relative to.
+    * ``meta_path`` is the path to a usable ``_metadata`` file (or ``None``).
+    * ``valid_paths`` mirrors the existing "filter the _metadata dataset by
+      a user-provided file list" behavior.
+
+    Unlike PyArrow's directory discovery, the partition base is computed
+    *once* for the whole list, so that every file's partition values are
+    interpreted the same way (and so the result can be carried into the
+    read tasks).
+    """
+    valid_paths = None
+    meta_path = None
+    base = None
+
+    if len(paths) == 1 and fs.isdir(paths[0]):
+        root = paths[0]
+        paths, _base, fns = _sort_and_analyze_paths([root], fs)
+        root = fs.sep.join([_base, fns[0]])
+        candidate = fs.sep.join([root, "_metadata"])
+        if not ignore_metadata_file and fs.exists(candidate):
+            meta_path = candidate
+            # The _metadata footer only knows relative paths; take the
+            # file list from it so `files` stays consistent.
+            with fs.open(meta_path, "rb") as fil:
+                md = pq.read_metadata(fil)
+            rels = [
+                md.row_group(i).column(0).file_path for i in range(md.num_row_groups)
+            ]
+            if rels and all(rel is not None for rel in rels):
+                files = sorted(
+                    [fs.sep.join([root, rel]) for rel in set(rels)],
+                    key=natural_sort_key,
+                )
+            else:
+                files = _find_data_files(fs, root, parquet_file_extension)
+        else:
+            files = _find_data_files(fs, root, parquet_file_extension)
+        base = root
+
+    elif len(paths) > 1:
+        paths, _base, fns = _sort_and_analyze_paths(paths, fs)
+        candidate = fs.sep.join([_base, "_metadata"])
+        if "_metadata" in fns:
+            if not ignore_metadata_file:
+                meta_path = candidate
+                valid_paths = [fn for fn in fns if fn != "_metadata"]
+            files = [
+                fs.sep.join([_base, fn]) for fn in fns if fn != "_metadata"
+            ]
+        else:
+            files = list(paths)
+        base = _base
+    else:
+        files = list(paths)
+        base = _partition_base_dir(files, sep=fs.sep)
+
+    if base is None:
+        base = _partition_base_dir(files, sep=fs.sep)
+    return files, base, meta_path, valid_paths
 
 
 def _process_kwargs(partitioning=None, **kwargs):
@@ -361,75 +495,10 @@ def _process_kwargs(partitioning=None, **kwargs):
     }
 
 
-def _filters_to_expression(filters, propagate_null=False, nan_is_null=True):
-    # Mostly copied from: pq.filters_to_expression
-    # TODO: Use pq.filters_to_expression if/when null-value
-    # handling is resolved.
-    # See: https://github.com/dask/dask/issues/9845
-
-    if isinstance(filters, pa_ds.Expression):
-        return filters
-
-    if filters is not None:
-        if len(filters) == 0 or any(len(f) == 0 for f in filters):
-            raise ValueError("Malformed filters")
-        if isinstance(filters[0][0], str):
-            # We have encountered the situation where we have one nesting level
-            # too few:
-            #   We have [(,,), ..] instead of [[(,,), ..]]
-            filters = [filters]
-
-    def convert_single_predicate(col, op, val):
-        field = pa_ds.field(col)
-
-        # Handle null-value comparison
-        if val is None or (nan_is_null and val is np.nan):
-            if op == "is":
-                return field.is_null(nan_is_null=nan_is_null)
-            elif op == "is not":
-                return ~field.is_null(nan_is_null=nan_is_null)
-            else:
-                raise ValueError(
-                    f'"{(col, op, val)}" is not a supported predicate '
-                    f'Please use "is" or "is not" for null comparison.'
-                )
-
-        if op == "=" or op == "==":
-            expr = field == val
-        elif op == "!=":
-            expr = field != val
-        elif op == "<":
-            expr = field < val
-        elif op == ">":
-            expr = field > val
-        elif op == "<=":
-            expr = field <= val
-        elif op == ">=":
-            expr = field >= val
-        elif op == "in":
-            expr = field.isin(val)
-        elif op == "not in":
-            expr = ~field.isin(val)
-        else:
-            raise ValueError(
-                f'"{(col, op, val)}" is not a valid operator in predicates.'
-            )
-
-        # (Optionally) Avoid null-value propagation
-        if not propagate_null and op in ("!=", "not in"):
-            return field.is_null(nan_is_null=nan_is_null) | expr
-        return expr
-
-    disjunction_members = []
-
-    for conjunction in filters:
-        conjunction_members = [
-            convert_single_predicate(col, op, val) for col, op, val in conjunction
-        ]
-
-        disjunction_members.append(reduce(operator.and_, conjunction_members))
-
-    return reduce(operator.or_, disjunction_members)
+# Use the shared, null-aware filter translation (also used by the
+# PyArrow-filesystem reader).  This supports ``is``/``is not`` for
+# null predicates.
+_filters_to_expression = filters_to_expression
 
 
 #
@@ -929,16 +998,71 @@ class ArrowDatasetEngine(Engine):
         # Extract dataset-specific options
         _dataset_kwargs = kwargs.pop("dataset", {})
 
-        if "partitioning" not in _dataset_kwargs:
-            _dataset_kwargs["partitioning"] = "hive"
+        # PyArrow's *inferred* Hive partitioning cannot type a column whose
+        # directories only contain null values (""No non-null segments were
+        # available ...").  We therefore discover the partition columns and
+        # their types explicitly whenever the user did not ask for a custom
+        # partitioning scheme.  The explicit partitioning object is carried
+        # through discovery and into the per-partition read tasks.
+        user_partitioning = _dataset_kwargs.get("partitioning")
+        _explicit_partitioning = user_partitioning is None
 
         if "format" not in _dataset_kwargs:
             _dataset_kwargs["format"] = pa_ds.ParquetFileFormat()
         _processed_dataset_kwargs = _process_kwargs(**_dataset_kwargs)
 
-        # Case-dependent pyarrow.dataset creation
         has_metadata_file = False
-        if len(paths) == 1 and fs.isdir(paths[0]):
+        partition_base_dir = None
+        partitioning = None
+        partition_dictionaries = {}
+
+        if _explicit_partitioning:
+            files, base, meta_path, valid_paths = _resolve_hive_files(
+                paths,
+                fs,
+                ignore_metadata_file=ignore_metadata_file,
+                parquet_file_extension=parquet_file_extension,
+            )
+            has_metadata_file = meta_path is not None
+            partition_base_dir = base
+
+            names = _partition_names_from_paths(files, base, sep=fs.sep) if base else []
+            if names:
+                partitioning, partition_dictionaries = build_hive_partitioning(
+                    files, base, names, sep=fs.sep
+                )
+                # Carry the explicit partitioning into the per-partition read
+                # tasks (via `kwargs["dataset"]`).  This guarantees that the
+                # path -> partition-value mapping used when planning is
+                # identical to the one used when reading.
+                _dataset_kwargs["partitioning"] = partitioning
+                _dataset_kwargs["partition_base_dir"] = base
+                _processed_dataset_kwargs = _process_kwargs(**_dataset_kwargs)
+
+            if meta_path is not None:
+                # Reuse the global footer metadata. An explicit partitioning
+                # schema is required here so that all-null partition columns
+                # can still be typed.
+                meta_kwargs = dict(_processed_dataset_kwargs)
+                if names:
+                    meta_kwargs["partitioning"] = partitioning
+                    meta_kwargs["partition_base_dir"] = base
+                ds = pa_ds.parquet_dataset(
+                    meta_path,
+                    filesystem=_wrapped_fs(fs),
+                    **meta_kwargs,
+                )
+            else:
+                ds_kwargs = dict(_processed_dataset_kwargs)
+                if names:
+                    ds_kwargs["partitioning"] = partitioning
+                    ds_kwargs["partition_base_dir"] = base
+                ds = pa_ds.dataset(
+                    files,
+                    filesystem=_wrapped_fs(fs),
+                    **ds_kwargs,
+                )
+        elif len(paths) == 1 and fs.isdir(paths[0]):
             # Use _analyze_paths to avoid relative-path
             # problems (see GH#5608)
             paths, base, fns = _sort_and_analyze_paths(paths, fs)
@@ -995,6 +1119,11 @@ class ArrowDatasetEngine(Engine):
                 **_processed_dataset_kwargs,
             )
 
+        if partitioning is None:
+            # Custom partitioning was supplied by the caller; use what
+            # PyArrow built for discovery/read consistency.
+            partitioning = getattr(ds, "partitioning", None)
+
         # Get file_frag sample and extract physical_schema
         try:
             file_frag = next(ds.get_fragments())
@@ -1002,7 +1131,6 @@ class ArrowDatasetEngine(Engine):
         except StopIteration:
             file_frag = None
             physical_schema = ds.schema
-
         # Set split_row_groups for desired partitioning behavior
         #
         # Expected behavior for split_row_groups + blocksize combinations:
@@ -1066,24 +1194,23 @@ class ArrowDatasetEngine(Engine):
         #          names of partitioned columns.
         #
         partition_obj, partition_names = [], []
-        if ds.partitioning and ds.partitioning.schema:
-            partition_names = list(ds.partitioning.schema.names)
+        if partitioning is not None and partitioning.schema:
+            partition_names = list(partitioning.schema.names)
+            ds_dictionaries = getattr(partitioning, "dictionaries", None)
             for i, name in enumerate(partition_names):
-                dictionary = (
-                    ds.partitioning.dictionaries[i]
-                    if ds.partitioning.dictionaries
-                    else None
-                )
-                partition_obj.append(
-                    PartitionObj(
-                        name,
-                        (
-                            pd.Series([], dtype="object")
-                            if dictionary is None
-                            else dictionary.to_pandas()
-                        ),
+                if name in partition_dictionaries:
+                    keys = partition_dictionaries[name]
+                elif ds_dictionaries:
+                    keys = ds_dictionaries[i]
+                else:
+                    keys = None
+                if keys is None:
+                    keys = pd.Series(
+                        [], dtype=partitioning.schema.field(name).type.to_pandas_dtype()
                     )
-                )
+                else:
+                    keys = pd.Series(keys)
+                partition_obj.append(PartitionObj(name, keys))
 
         # Check the `aggregate_files` setting
         aggregation_depth = _get_aggregation_depth(aggregate_files, partition_names)
@@ -1105,6 +1232,7 @@ class ArrowDatasetEngine(Engine):
             "aggregation_depth": aggregation_depth,
             "partitions": partition_obj,
             "partition_names": partition_names,
+            "partition_base_dir": partition_base_dir,
             "metadata_task_size": metadata_task_size,
             "kwargs": {
                 "dataset": _dataset_kwargs,
@@ -1716,20 +1844,37 @@ class ArrowDatasetEngine(Engine):
         if partitions and isinstance(partitions, list):
             keys_dict = {k: v for (k, v) in partition_keys}
             for partition in partitions:
-                if partition.name not in arrow_table.schema.names:
-                    # We read from file paths, so the partition
-                    # columns may NOT be in our table yet.
-                    cat = keys_dict.get(partition.name, None)
-                    if not len(partition.keys):
-                        arr = pa.array(np.full(len(arrow_table), cat))
+                if partition.name in arrow_table.schema.names:
+                    continue
+                # We read from file paths, so the partition columns may NOT
+                # be in our table yet.  Build a dictionary array that uses a
+                # fixed category set, with null values encoded via the
+                # indices' validity bitmap (a null category is not allowed
+                # by pandas).
+                cat = keys_dict.get(partition.name, None)
+                if len(partition.keys):
+                    if pd.isna(cat):
+                        codes = np.full(len(arrow_table), -1, dtype="i4")
                     else:
-                        cat_ind = np.full(
-                            len(arrow_table), partition.keys.get_loc(cat), dtype="i4"
+                        codes = np.full(
+                            len(arrow_table),
+                            partition.keys.get_loc(cat),
+                            dtype="i4",
                         )
-                        arr = pa.DictionaryArray.from_arrays(
-                            cat_ind, pa.array(partition.keys)
-                        )
-                    arrow_table = arrow_table.append_column(partition.name, arr)
+                    null_mask = codes < 0
+                    safe_codes = np.where(null_mask, 0, codes)
+                    indices = pa.array(safe_codes, mask=null_mask)
+                    arr = pa.DictionaryArray.from_arrays(
+                        indices, pa.array(partition.keys)
+                    )
+                else:
+                    values = np.full(
+                        len(arrow_table),
+                        None if pd.isna(cat) else cat,
+                        dtype=object,
+                    )
+                    arr = pa.array(values)
+                arrow_table = arrow_table.append_column(partition.name, arr)
 
         return arrow_table
 
