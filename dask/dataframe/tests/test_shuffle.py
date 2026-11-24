@@ -648,18 +648,18 @@ def test_set_index_raises_error_on_bad_input():
     df = pd.DataFrame({"a": [1, 2, 3, 4, 5, 6, 7], "b": [7, 6, 5, 4, 3, 2, 1]})
     ddf = dd.from_pandas(df, 2)
 
-    msg = r"Dask dataframe does not yet support multi-indexes"
-    with pytest.raises(NotImplementedError) as err:
-        ddf.set_index(["a", "b"])
-    assert msg in str(err.value)
+    # Three labels (or any count other than two) are rejected before the
+    # source is read; nested declarations remain unsupported.
+    with pytest.raises(ValueError):
+        ddf.set_index(["a", "b", "a"])
 
     with pytest.raises(NotImplementedError) as err:
         ddf.set_index([["a", "b"]])
-    assert msg in str(err.value)
+    assert "You tried to index with this index" in str(err.value)
 
     with pytest.raises(NotImplementedError) as err:
         ddf.set_index([["a"]])
-    assert msg in str(err.value)
+    assert "You tried to index with this index" in str(err.value)
 
 
 def test_set_index_sorted_true():

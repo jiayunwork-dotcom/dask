@@ -2624,7 +2624,14 @@ Expr={expr}"""
     def _repr_divisions(self):
         name = f"npartitions={self.npartitions}"
         if self.known_divisions:
-            divisions = pd.Index(self.divisions, name=name)
+            try:
+                divisions = pd.Index(self.divisions, name=name)
+            except ValueError:
+                # Two-level composite divisions are tuples; a plain Index
+                # would misinterpret them as a MultiIndex specification.
+                divisions = pd.Index(
+                    [str(d) for d in self.divisions], name=name
+                )
         else:
             # avoid to be converted to NaN
             divisions = pd.Index([""] * (self.npartitions + 1), name=name)
@@ -3398,8 +3405,11 @@ class DataFrame(FrameBase):
 
         Parameters
         ----------
-        other: string or Dask Series
-            Column to use as index.
+        other: string, Dask Series, or list of two column names
+            Column to use as index.  Passing a list of exactly **two** column
+            names builds a two-level (composite) ordered index; see the
+            "Two-level composite index" section below.  A single-element list
+            is treated as a one-column index.
         drop: boolean, default True
             Delete column to be used as the new index.
         sorted: bool, optional
@@ -3478,9 +3488,76 @@ class DataFrame(FrameBase):
         ["Alice", "Laura", "Ursula", "Zelda"]
         >>> # ^ Now copy-paste this and edit the line above to:
         >>> # ddf2 = ddf.set_index("name", divisions=["Alice", "Laura", "Ursula", "Zelda"])
+
+        Two-level composite index
+        -------------------------
+        Passing a list of exactly two column names builds a *composite* ordered
+        index, e.g. ``df.set_index(["account", "seq"], npartitions=8,
+        shuffle_method="tasks")``.  The result has a pandas ``MultiIndex``
+        whose level names are the two column names.  Complete keys are ordered
+        lexicographically by component; ``int64`` levels keep exact integer
+        ordering (values above ``2**53`` stay distinct) and string levels use
+        Unicode code-point ordering.  The two components are never
+        concatenated, so separators and empty strings are unambiguous.
+
+        Supported configuration for the composite form
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        * exactly two distinct column names, each an ``int64`` or string
+          column with no missing values (decided from metadata before the
+          source is read; missing / mixed / wrong-typed *values* raise
+          ``ValueError`` when first observed),
+        * ``sort=True`` (default), ``sorted=False`` (default) and
+          ``append=False`` (default); the unsupported combinations are
+          rejected before any source read,
+        * ``shuffle_method`` in ``{"tasks", "disk"}``,
+        * ``npartitions`` ``None`` (reuse the input count as the target) or a
+          positive non-boolean integer; if explicit ``divisions`` are given
+          the partition count is ``len(divisions) - 1`` and an explicit
+          ``npartitions`` must agree.
+
+        ``divisions`` is a sequence of ``(account, seq)`` pairs.  It is
+        strictly increasing except that the last two entries may be equal
+        (used for a trailing run of duplicate complete keys).  Partition *i*
+        covers ``[d[i], d[i+1])``; the last partition also includes its right
+        endpoint.  Out-of-range data under explicit divisions raises rather
+        than being dropped or clamped.  When ``divisions`` is omitted, a
+        bounded per-partition summary (at most 4096 raw keys per input
+        partition) chooses boundaries that are real data keys, so the
+        published divisions always describe the actual content.  An empty
+        input keeps the level names/dtypes and reports unknown divisions.
+
+        Selection uses the existing ``loc`` accessor:
+        ``indexed.loc[(a, b), :]`` returns every row for one complete key,
+        ``indexed.loc[slice((a, b), (c, d)), columns]`` selects an inclusive
+        key range, a missing complete key raises ``KeyError`` and an empty
+        range returns an empty frame with the same structure.  The second
+        component of the row key is never mistaken for a column name.
         """
+        if isinstance(other, list) and len(other) == 1 and isinstance(
+            other[0], list
+        ):
+            raise NotImplementedError(
+                "Dask dataframe does not support nested lists as index "
+                "declarations.\n"
+                f"You tried to index with this index: {other}\n"
+                "Indexes must be single columns only."
+            )
         if isinstance(other, list) and len(other) == 1:
             other = other[0]
+        if isinstance(other, list) and len(other) > 1:
+            return self._set_index_composite(
+                other,
+                drop=drop,
+                sorted=sorted,
+                sort=sort,
+                npartitions=npartitions,
+                divisions=divisions,
+                shuffle_method=shuffle_method,
+                append=append,
+                upsample=upsample,
+                partition_size=partition_size,
+                options=options,
+            )
         if isinstance(other, list):
             if any(isinstance(c, FrameBase) for c in other):
                 raise TypeError("List[FrameBase] not supported by set_index")
@@ -3546,6 +3623,92 @@ class DataFrame(FrameBase):
                 shuffle_method=get_specified_shuffle(shuffle_method),
                 append=append,
                 options=options,
+            )
+        )
+
+    def _set_index_composite(
+        self,
+        columns,
+        *,
+        drop,
+        sorted,
+        sort,
+        npartitions,
+        divisions,
+        shuffle_method,
+        append,
+        upsample,
+        partition_size,
+        options,
+    ):
+        """Two-column ``set_index``: build an ordered two-level index.
+
+        Every error decidable from metadata or configuration is raised here,
+        before any source is read.  Value-level errors (missing / mixed
+        entries) are raised when the offending partition is first inspected.
+        """
+        from dask.dataframe.dask_expr._multi_index import (
+            CompositeIndexError,
+            normalize_divisions,
+            validate_key_columns,
+            validate_npartitions,
+        )
+        from dask.dataframe.dask_expr._multi_index_expr import (
+            SetIndexComposite,
+            resolve_shuffle_method,
+        )
+
+        if any(isinstance(c, FrameBase) for c in columns):
+            raise TypeError(
+                "List[FrameBase] not supported by set_index; pass column names"
+            )
+        if any(isinstance(c, (list, tuple)) for c in columns):
+            raise NotImplementedError(
+                "Dask dataframe does not support nested lists as index "
+                f"declarations; you tried to index with {columns!r}"
+            )
+        if sorted:
+            raise NotImplementedError(
+                "composite set_index does not support sorted=True; "
+                "use sort=True (default) instead"
+            )
+        if not sort:
+            raise NotImplementedError(
+                "composite set_index does not support sort=False; "
+                "use sort=True (default) instead"
+            )
+        if append:
+            raise NotImplementedError(
+                "composite set_index does not support append=True"
+            )
+
+        npartitions = validate_npartitions(npartitions)
+        kinds = validate_key_columns(self._meta, columns)
+        method = resolve_shuffle_method(shuffle_method)
+        user_divisions = None
+        if divisions is not None:
+            user_divisions = normalize_divisions(divisions, kinds)
+            if npartitions is not None and npartitions != len(user_divisions) - 1:
+                raise CompositeIndexError(
+                    "when explicit divisions are given, npartitions must equal "
+                    f"len(divisions) - 1 ({len(user_divisions) - 1}); got "
+                    f"npartitions={npartitions}"
+                )
+
+        missing = [c for c in columns if c not in self._meta.columns]
+        if missing:
+            raise KeyError(f"None of [{missing[0]!r}] are in the [columns]")
+
+        return new_collection(
+            SetIndexComposite(
+                self,
+                tuple(columns),
+                drop,
+                user_divisions,
+                npartitions,
+                tuple(kinds),
+                method,
+                options or None,
             )
         )
 
@@ -4848,6 +5011,42 @@ def optimize(collection, fuse=True):
     return new_collection(expr.optimize(collection.expr, fuse=fuse))
 
 
+def _validate_composite_frame_index(data):
+    """Validate a pre-built two-level ``MultiIndex`` passed to from_pandas."""
+    from dask.dataframe.dask_expr._multi_index import (
+        CompositeIndexError,
+        level_kind,
+        normalize_component_array,
+    )
+
+    index = data.index
+    if index.nlevels != 2:
+        raise NotImplementedError(
+            "from_pandas only supports one- or two-level indexes; got "
+            f"{index.nlevels} levels"
+        )
+    names = list(index.names)
+    if names[0] is None or names[1] is None:
+        raise CompositeIndexError(
+            "a two-level MultiIndex passed to from_pandas must have named levels"
+        )
+    kinds = []
+    for position, level in enumerate(index.levels):
+        try:
+            kinds.append(level_kind(level.dtype))
+        except CompositeIndexError as err:
+            raise CompositeIndexError(
+                "from_pandas composite indexes must use int64 or string levels; "
+                f"level {position} ({names[position]!r}) has dtype "
+                f"{level.dtype!r}"
+            ) from err
+    # Value-level checks: no missing entries and no mixed types.
+    for position, kind in enumerate(kinds):
+        values = pd.Series(index.get_level_values(position))
+        normalize_component_array(values, kind, where=f"level {position!r}")
+    return kinds
+
+
 def from_pandas(data, npartitions=None, sort=True, chunksize=None):
     """
     Construct a Dask DataFrame from a Pandas DataFrame
@@ -4876,6 +5075,14 @@ def from_pandas(data, npartitions=None, sort=True, chunksize=None):
         Sort the input by index first to obtain cleanly divided partitions
         (with known divisions).  If False, the input will not be sorted, and
         all divisions will be set to None. Default is True.
+
+        A pre-built two-level ``MultiIndex`` (whose two levels are ``int64``
+        or string, with no missing values) is also accepted.  With
+        ``sort=True`` the input is sorted and real ``(level0, level1)``
+        divisions are produced; a complete key is never split across
+        partitions.  With ``sort=False`` the input row order is preserved and
+        the divisions stay unknown, but the result is still evaluable and
+        ``loc`` still works.
 
     Returns
     -------
@@ -4919,11 +5126,16 @@ def from_pandas(data, npartitions=None, sort=True, chunksize=None):
     if not has_parallel_type(data):
         raise TypeError("Input must be a pandas DataFrame or Series.")
 
-    if data.index.isna().any() and not _is_any_real_numeric_dtype(data.index):
-        raise NotImplementedError(
-            "Index in passed data is non-numeric and contains nulls, which Dask does not entirely support.\n"
-            "Consider passing `data.loc[~data.isna()]` instead."
-        )
+    if isinstance(data.index, pd.MultiIndex):
+        # Any MultiIndex must be a supported two-level index; ``isna`` is not
+        # defined on MultiIndex, so validate before the null check below.
+        _validate_composite_frame_index(data)
+    else:
+        if data.index.isna().any() and not _is_any_real_numeric_dtype(data.index):
+            raise NotImplementedError(
+                "Index in passed data is non-numeric and contains nulls, which Dask does not entirely support.\n"
+                "Consider passing `data.loc[~data.isna()]` instead."
+            )
 
     if npartitions is not None and not isinstance(npartitions, int):
         raise TypeError(

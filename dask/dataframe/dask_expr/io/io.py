@@ -5,6 +5,7 @@ import math
 import operator
 
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 
 from dask import delayed
@@ -473,9 +474,22 @@ class FromPandas(PartitionsFiltered, BlockwiseIO):
         if key not in _division_info_cache:
             data = self.frame._data
             nrows = len(data)
+            composite_index = (
+                isinstance(data.index, pd.MultiIndex) and data.index.nlevels == 2
+            )
             if nrows == 0:
                 npartitions = npartitions or 1
                 locations = [0] * (npartitions + 1)
+                divisions = (None,) * len(locations)
+            elif composite_index and not sort:
+                # A pre-indexed two-level batch loaded without sorting keeps
+                # its input row order and exposes unknown divisions, even when
+                # the index happens to be monotonic.
+                if npartitions is None:
+                    chunksize = self.operand("chunksize")
+                else:
+                    chunksize = int(math.ceil(nrows / npartitions))
+                locations = list(range(0, nrows, chunksize)) + [len(data)]
                 divisions = (None,) * len(locations)
             elif sort or self.frame._data.index.is_monotonic_increasing:
                 divisions, locations = sorted_division_locations(

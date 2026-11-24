@@ -22,6 +22,10 @@ from dask.dataframe.dask_expr._expr import (
     are_co_aligned,
     plain_column_projection,
 )
+from dask.dataframe.dask_expr._multi_index import (
+    index_level_kinds,
+    plain_key,
+)
 from dask.dataframe.dispatch import meta_nonempty
 from dask.dataframe.indexing import (
     _coerce_loc_index,
@@ -67,6 +71,9 @@ class ILocIndexer(Indexer):
 
 class LocIndexer(Indexer):
     def __getitem__(self, key):
+        if isinstance(key, tuple) and _is_composite_frame(self.obj):
+            return self._composite_getitem(key)
+
         if isinstance(key, tuple):
             if len(key) > self.obj.ndim:
                 raise IndexingError("Too many indexers")
@@ -84,6 +91,109 @@ class LocIndexer(Indexer):
             cindexer = cindexer.item()
 
         return self._loc(iindexer, cindexer)
+
+    # -- two-level composite MultiIndex -----------------------------------
+    def _composite_getitem(self, key):
+        """Parse ``key`` for a 2-level ``MultiIndex`` following pandas.
+
+        A bare tuple without a slice is a *complete row key*: ``(a, b)``.
+        A tuple whose first element is itself a 2-tuple selects rows then
+        columns: ``((a, b), cols)``.  A slice selects a row range:
+        ``(slice((a, b), (c, d)), cols)``.
+        """
+        if len(key) > self.obj.ndim:
+            raise IndexingError("Too many indexers")
+        if len(key) == 2 and not any(isinstance(k, slice) for k in key):
+            first = key[0]
+            if isinstance(first, tuple) and len(first) == 2:
+                iindexer, cindexer = first, key[1]
+            elif isinstance(first, (list, np.ndarray)) and not isinstance(
+                first, tuple
+            ):
+                # ``df.loc[[(a, b), (c, d)], cols]`` -- a list of complete
+                # keys is a row selection, not a complete key itself.
+                iindexer, cindexer = first, key[1]
+            else:
+                iindexer, cindexer = key, None
+        elif len(key) == 2:
+            iindexer, cindexer = key
+        elif len(key) == 1:
+            iindexer, cindexer = key[0], None
+        else:
+            raise IndexingError("Too many indexers")
+
+        if cindexer is not None and cindexer is not slice(None):
+            pd_loc = self.obj._meta.loc[:, cindexer]
+            if isinstance(pd_loc, pd.DataFrame):
+                cindexer = list(pd_loc.columns)
+        if isinstance(cindexer, np.generic):
+            cindexer = cindexer.item()
+
+        if isinstance(iindexer, slice):
+            return self._composite_loc_slice(iindexer, cindexer)
+
+        if isinstance(iindexer, (list, np.ndarray)) or is_series_like(iindexer):
+            if not self.obj.known_divisions:
+                raise KeyError(
+                    "Cannot index with list against unknown division. "
+                    "Try setting divisions using ``ddf.set_index``"
+                )
+            if len(iindexer) == 0:
+                return new_collection(LocEmpty(self.obj._meta, cindexer))
+            return new_collection(LocList(self.obj, list(iindexer), cindexer))
+
+        return self._composite_loc_element(iindexer, cindexer)
+
+    def _composite_loc_element(self, iindexer, cindexer):
+        if not isinstance(iindexer, tuple) or len(iindexer) != 2:
+            # A partial key (e.g. only the first level) cannot be resolved
+            # to a single partition without scanning; reject explicitly
+            # rather than silently returning wrong rows.
+            raise KeyError(
+                "the label [%s] is not a complete two-level key" % (iindexer,)
+            )
+        if not self.obj.known_divisions:
+            return new_collection(
+                LocUnknown(self.obj, slice(iindexer, iindexer), cindexer)
+            )
+        divisions = self.obj.divisions
+        if iindexer < divisions[0] or iindexer > divisions[-1]:
+            raise KeyError("the label [%s] is not in the index" % (iindexer,))
+        partition = _partition_of_index_value(divisions, iindexer)
+        return new_collection(
+            LocCompositeElement(
+                Partitions(self.obj.expr, [partition]), iindexer, cindexer
+            )
+        )
+
+    def _composite_loc_slice(self, iindexer, cindexer):
+        if not self.obj.known_divisions:
+            return new_collection(
+                LocUnknown(self.obj, iindexer, cindexer)
+            )
+        assert iindexer.step in (None, 1)
+        divisions = self.obj.divisions
+        start_key = iindexer.start
+        stop_key = iindexer.stop
+        if start_key is not None and stop_key is not None and stop_key < start_key:
+            return new_collection(LocEmpty(self.obj._meta, cindexer))
+        if start_key is not None and start_key > divisions[-1]:
+            return new_collection(LocEmpty(self.obj._meta, cindexer))
+        if stop_key is not None and stop_key < divisions[0]:
+            return new_collection(LocEmpty(self.obj._meta, cindexer))
+        start = (
+            0
+            if start_key is None
+            else _partition_of_index_value(divisions, start_key)
+        )
+        stop = (
+            self.obj.npartitions - 1
+            if stop_key is None
+            else _partition_of_index_value(divisions, stop_key)
+        )
+        if stop < start:
+            return new_collection(LocEmpty(self.obj._meta, cindexer))
+        return new_collection(LocSlice(self.obj, iindexer, cindexer))
 
     def _loc(self, iindexer, cindexer):
         if iindexer is None or isinstance(iindexer, slice) and iindexer == slice(None):
@@ -228,6 +338,47 @@ class LocBase(Blockwise):
         return t
 
 
+def _is_composite_frame(obj) -> bool:
+    """True if ``obj`` has a two-level composite ``MultiIndex``."""
+    index = obj._meta.index
+    if not isinstance(index, pd.MultiIndex) or index.nlevels != 2:
+        return False
+    return index_level_kinds(index) is not None
+
+
+def _loc_composite_element(df, key, cindexer):
+    sliced = df.loc[slice(key, key)]
+    if len(sliced) == 0:
+        raise KeyError(key)
+    if cindexer is None:
+        return sliced
+    return sliced.loc[:, cindexer]
+
+
+def _loc_composite_slice(df, start, stop, cindexer):
+    sliced = df.loc[slice(start, stop)]
+    if cindexer is None:
+        return sliced
+    return sliced.loc[:, cindexer]
+
+
+class LocCompositeElement(Blockwise):
+    """``.loc[(a, b), cols]`` on one known composite partition.
+
+    Raises ``KeyError`` when the complete key is absent, matching pandas.
+    """
+
+    _parameters = ["frame", "iindexer", "cindexer"]
+    _keyword_only = ["cindexer"]
+    operation = staticmethod(_loc_composite_element)
+
+    @functools.cached_property
+    def _meta(self):
+        if self.cindexer is None:
+            return self.frame._meta.iloc[0:0]
+        return self.frame._meta.iloc[0:0].loc[:, self.cindexer]
+
+
 class LocUnknown(Blockwise):
     _parameters = ["frame", "iindexer", "cindexer"]
     operation = staticmethod(methods.try_loc)
@@ -319,6 +470,27 @@ class LocEmpty(LocList):
 
 class LocSlice(LocBase):
     _projection_passthrough = True
+
+    @functools.cached_property
+    def _projection_columns(self):
+        # ``plain_column_projection`` must keep the columns referenced by the
+        # column indexer alive, otherwise a projection placed after the loc
+        # (``ddf.loc[...][["a"]]``) would push a column list down to the
+        # frame that no longer contains every column the loc itself reads.
+        if self.cindexer is None or isinstance(self.cindexer, slice):
+            return []
+        if isinstance(self.cindexer, list):
+            return list(self.cindexer)
+        return [self.cindexer]
+
+    def _simplify_up(self, parent, dependents):
+        if isinstance(parent, Projection):
+            return plain_column_projection(
+                self,
+                parent,
+                dependents,
+                additional_columns=self._projection_columns,
+            )
 
     @functools.cached_property
     def start(self):

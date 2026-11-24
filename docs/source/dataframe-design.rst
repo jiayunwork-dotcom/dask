@@ -124,6 +124,57 @@ known divisions will have to perform a sort.  This can generally achieved by
 calling ``df.set_index(...)``.
 
 
+.. _dataframe-design-composite-index:
+
+Two-level composite indexes
+---------------------------
+
+``df.set_index(["account", "seq"])`` builds an ordered two-level
+``MultiIndex`` from two existing columns.  The complete key is ordered
+lexicographically by component (never by a string concatenation), so a row
+range such as ``df.loc[slice((a, b), (c, d))]`` maps directly onto a
+contiguous run of partitions and only the partitions whose boundary can
+intersect the range are read.
+
+**Divisions.**  For a two-level index, ``divisions`` is a sequence of
+complete ``(account, seq)`` pairs.  Partition *i* covers
+``[d[i], d[i+1])`` and the last partition also includes ``d[-1]``.  The last
+two entries may be equal, which represents a trailing run of duplicate
+complete keys without splitting it; a complete key never straddles a
+boundary.  Out-of-range data under explicit divisions raises rather than
+being dropped or clamped.
+
+**Planning cost.**  With explicit ``divisions`` the expression, its
+``_meta`` and ``optimize()`` never read the source.  Without ``divisions``
+the first access to ``.divisions`` (or ``optimize`` / ``persist`` /
+``compute``) runs a small summary graph on the client: each input partition
+uploads at most 4096 raw key tuples plus one low/high endpoint and a row
+count.  Planner state therefore grows with the number of input partitions
+and that fixed per-partition allowance, never with the total row count or
+the number of distinct keys.  The chosen boundaries are real data keys, so
+the published divisions always describe the actual content.
+
+**Duplicate-heavy keys.**  When a single complete key holds most of the
+rows it cannot be split across partitions without breaking the "one key per
+partition" guarantee.  The algorithm then produces fewer, unevenly sized
+partitions rather than an even split; this is reported honestly by the
+per-partition row counts (see ``scratch/run_composite_index_experiments.py``).
+
+**Construction trade-off.**  Two organisations were considered.  (1) Cast
+each row to a single sortable *composite string* and reuse the one-column
+path.  This is simple and reuses existing quantile machinery, but it is
+ambiguous at component boundaries (``"a"+"bc" == "ab"+"c"``), cannot keep
+``int > 2**53`` exact, and forces every key through string formatting.  (2)
+Keep the two components separate and compare them as tuples (what this
+implementation does).  It preserves exact integer and Unicode ordering,
+makes boundaries unambiguous, and lets the partition-id computation stay
+vectorised in NumPy (``searchsorted`` on the first level plus a per-bucket
+``searchsorted`` on the second).  The cost is a modest per-partition
+normalisation pass to validate the two arrays and a slightly more involved
+cut-point selection over the sampled keys; both are linear in the number of
+rows read and do not require materialising a full key set.
+
+
 .. _dataframe-design-groupby:
 
 Groupby

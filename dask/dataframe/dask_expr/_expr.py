@@ -1676,6 +1676,29 @@ class Where(Elemwise):
 def _check_divisions(df, i, division_min, division_max, last):
     if not len(df):
         return df
+    composite = isinstance(division_min, tuple) or isinstance(division_max, tuple)
+    if composite and not is_index_like(df) and isinstance(df.index, pd.MultiIndex):
+        # Two-level composite divisions are complete (a, b) pairs; compare the
+        # full key, not just the first level.
+        index = df.index
+        real_min = index.min()
+        real_max = index.max()
+        valid_min = valid_max = True
+        if division_min is not None and not pd.isna(division_min[0]):
+            valid_min = real_min >= division_min
+        if division_max is not None and not pd.isna(division_max[0]):
+            valid_max = (
+                real_max <= division_max
+                if last
+                else real_max < division_max
+            )
+        if not (valid_min and valid_max):
+            raise RuntimeError(
+                f"`enforce_runtime_divisions` failed for partition {i}."
+                f" Expected a range of [{division_min}, {division_max}), "
+                f" but the real range was [{real_min}, {real_max}]."
+            )
+        return df
     if is_index_like(df):
         index = df
     else:

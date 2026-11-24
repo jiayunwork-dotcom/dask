@@ -243,14 +243,17 @@ def test_set_index_sorted(pdf):
     q = df.set_index("y", sorted=True)["x"]
     assert_eq(q, pdf.set_index("y")["x"])
 
-    with pytest.raises(NotImplementedError, match="not yet support multi-indexes"):
+    # Two-column (composite) indexes are supported for the default
+    # sort=True / sorted=False / append=False configuration; the
+    # unsupported combinations are rejected explicitly.
+    with pytest.raises(NotImplementedError, match="sorted=True"):
         df.set_index(["y", "z"], sorted=True)
 
     with pytest.raises(TypeError, match="not supported by set_index"):
         df.set_index([df["y"], df["x"]], sorted=True)
 
-    with pytest.raises(NotImplementedError, match="does not yet support"):
-        df.set_index(["y", "z"], sorted=False)
+    with pytest.raises(NotImplementedError, match="sort=False"):
+        df.set_index(["y", "z"], sort=False)
 
 
 def test_set_index_pre_sorted(pdf):

@@ -64,10 +64,57 @@ def try_loc(df, iindexer, cindexer=None):
     """
     .loc for unknown divisions
     """
+    if isinstance(df.index, pd.MultiIndex) and df.index.nlevels == 2:
+        return _try_loc_composite(df, iindexer, cindexer)
     try:
         return loc(df, iindexer, cindexer)
     except KeyError:
         return df.head(0).loc[:, cindexer]
+
+
+def _composite_key_mask(index, key):
+    """Boolean mask selecting the rows of ``index`` at the complete key."""
+    first = index.get_level_values(0)
+    second = index.get_level_values(1)
+    return (first == key[0]) & (second == key[1])
+
+
+def _try_loc_composite(df, iindexer, cindexer=None):
+    """Composite ``loc`` on an *unsorted* partition (unknown divisions).
+
+    Positional masking is used because a sorted ``slice`` is invalid on an
+    unsorted ``MultiIndex``.  Slices select an inclusive key range.
+    """
+    if isinstance(iindexer, slice):
+        start, stop = iindexer.start, iindexer.stop
+        mask = np.ones(len(df), dtype=bool)
+        if start is not None:
+            mask &= _composite_key_mask_ge(df.index, start)
+        if stop is not None:
+            mask &= _composite_key_mask_le(df.index, stop)
+        out = df[mask]
+    elif isinstance(iindexer, list):
+        mask = np.zeros(len(df), dtype=bool)
+        for key in iindexer:
+            mask |= _composite_key_mask(df.index, key)
+        out = df[mask]
+    else:
+        out = df[_composite_key_mask(df.index, iindexer)]
+    if cindexer is None:
+        return out
+    return out.loc[:, cindexer]
+
+
+def _composite_key_mask_ge(index, key):
+    first = index.get_level_values(0)
+    second = index.get_level_values(1)
+    return (first > key[0]) | ((first == key[0]) & (second >= key[1]))
+
+
+def _composite_key_mask_le(index, key):
+    first = index.get_level_values(0)
+    second = index.get_level_values(1)
+    return (first < key[0]) | ((first == key[0]) & (second <= key[1]))
 
 
 def boundary_slice(df, start, stop, right_boundary=True, left_boundary=True):

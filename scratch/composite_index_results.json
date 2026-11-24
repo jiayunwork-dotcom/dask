@@ -1,0 +1,1937 @@
+{
+  "dask_version": "unknown",
+  "results": [
+    {
+      "distribution": "uniform",
+      "input_partitions": 8,
+      "target_partitions": 8,
+      "shuffle_method": "tasks",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          176
+        ],
+        [
+          123,
+          2316
+        ],
+        [
+          247,
+          7408
+        ],
+        [
+          373,
+          1394
+        ],
+        [
+          499,
+          3190
+        ],
+        [
+          625,
+          7474
+        ],
+        [
+          750,
+          8880
+        ],
+        [
+          875,
+          8465
+        ],
+        [
+          999,
+          9857
+        ]
+      ],
+      "planning_seconds": 0.081,
+      "compute_seconds": 0.0426,
+      "uploaded_keys": 32752,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 32784,
+      "total_rows": 160000,
+      "expected_rows": 160000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 3860664,
+      "per_partition": [
+        {
+          "rows": 20002,
+          "payload_digest": -458299255887154434,
+          "key_min": [
+            0,
+            176
+          ],
+          "key_max": [
+            123,
+            2267
+          ],
+          "index": 0
+        },
+        {
+          "rows": 19987,
+          "payload_digest": -6329081331162847437,
+          "key_min": [
+            123,
+            2316
+          ],
+          "key_max": [
+            247,
+            7407
+          ],
+          "index": 1
+        },
+        {
+          "rows": 19986,
+          "payload_digest": -8531801829148723752,
+          "key_min": [
+            247,
+            7408
+          ],
+          "key_max": [
+            373,
+            1339
+          ],
+          "index": 2
+        },
+        {
+          "rows": 20017,
+          "payload_digest": -8065737631376464086,
+          "key_min": [
+            373,
+            1394
+          ],
+          "key_max": [
+            499,
+            3113
+          ],
+          "index": 3
+        },
+        {
+          "rows": 20003,
+          "payload_digest": 7782490005713469774,
+          "key_min": [
+            499,
+            3190
+          ],
+          "key_max": [
+            625,
+            7414
+          ],
+          "index": 4
+        },
+        {
+          "rows": 20016,
+          "payload_digest": -5900975577269645171,
+          "key_min": [
+            625,
+            7474
+          ],
+          "key_max": [
+            750,
+            8858
+          ],
+          "index": 5
+        },
+        {
+          "rows": 19998,
+          "payload_digest": -8448784894488847299,
+          "key_min": [
+            750,
+            8880
+          ],
+          "key_max": [
+            875,
+            8391
+          ],
+          "index": 6
+        },
+        {
+          "rows": 19991,
+          "payload_digest": 427080942546866379,
+          "key_min": [
+            875,
+            8465
+          ],
+          "key_max": [
+            999,
+            9857
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "uniform",
+      "input_partitions": 8,
+      "target_partitions": 8,
+      "shuffle_method": "disk",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          176
+        ],
+        [
+          123,
+          2316
+        ],
+        [
+          247,
+          7408
+        ],
+        [
+          373,
+          1394
+        ],
+        [
+          499,
+          3190
+        ],
+        [
+          625,
+          7474
+        ],
+        [
+          750,
+          8880
+        ],
+        [
+          875,
+          8465
+        ],
+        [
+          999,
+          9857
+        ]
+      ],
+      "planning_seconds": 0.0726,
+      "compute_seconds": 0.0562,
+      "uploaded_keys": 32752,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 32784,
+      "total_rows": 160000,
+      "expected_rows": 160000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 3860664,
+      "per_partition": [
+        {
+          "rows": 20002,
+          "payload_digest": -458299255887154434,
+          "key_min": [
+            0,
+            176
+          ],
+          "key_max": [
+            123,
+            2267
+          ],
+          "index": 0
+        },
+        {
+          "rows": 19987,
+          "payload_digest": -6329081331162847437,
+          "key_min": [
+            123,
+            2316
+          ],
+          "key_max": [
+            247,
+            7407
+          ],
+          "index": 1
+        },
+        {
+          "rows": 19986,
+          "payload_digest": -8531801829148723752,
+          "key_min": [
+            247,
+            7408
+          ],
+          "key_max": [
+            373,
+            1339
+          ],
+          "index": 2
+        },
+        {
+          "rows": 20017,
+          "payload_digest": -8065737631376464086,
+          "key_min": [
+            373,
+            1394
+          ],
+          "key_max": [
+            499,
+            3113
+          ],
+          "index": 3
+        },
+        {
+          "rows": 20003,
+          "payload_digest": 7782490005713469774,
+          "key_min": [
+            499,
+            3190
+          ],
+          "key_max": [
+            625,
+            7414
+          ],
+          "index": 4
+        },
+        {
+          "rows": 20016,
+          "payload_digest": -5900975577269645171,
+          "key_min": [
+            625,
+            7474
+          ],
+          "key_max": [
+            750,
+            8858
+          ],
+          "index": 5
+        },
+        {
+          "rows": 19998,
+          "payload_digest": -8448784894488847299,
+          "key_min": [
+            750,
+            8880
+          ],
+          "key_max": [
+            875,
+            8391
+          ],
+          "index": 6
+        },
+        {
+          "rows": 19991,
+          "payload_digest": 427080942546866379,
+          "key_min": [
+            875,
+            8465
+          ],
+          "key_max": [
+            999,
+            9857
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "uniform",
+      "input_partitions": 32,
+      "target_partitions": 8,
+      "shuffle_method": "tasks",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          0
+        ],
+        [
+          124,
+          7434
+        ],
+        [
+          250,
+          8116
+        ],
+        [
+          375,
+          4331
+        ],
+        [
+          500,
+          6232
+        ],
+        [
+          626,
+          3445
+        ],
+        [
+          750,
+          7012
+        ],
+        [
+          875,
+          6573
+        ],
+        [
+          999,
+          9994
+        ]
+      ],
+      "planning_seconds": 0.3264,
+      "compute_seconds": 0.1123,
+      "uploaded_keys": 131008,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 131136,
+      "total_rows": 640000,
+      "expected_rows": 640000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 15435768,
+      "per_partition": [
+        {
+          "rows": 80009,
+          "payload_digest": -8603357839323897406,
+          "key_min": [
+            0,
+            0
+          ],
+          "key_max": [
+            124,
+            7423
+          ],
+          "index": 0
+        },
+        {
+          "rows": 80051,
+          "payload_digest": 2686133760798549557,
+          "key_min": [
+            124,
+            7434
+          ],
+          "key_max": [
+            250,
+            8086
+          ],
+          "index": 1
+        },
+        {
+          "rows": 79950,
+          "payload_digest": 7188836194215229491,
+          "key_min": [
+            250,
+            8116
+          ],
+          "key_max": [
+            375,
+            4321
+          ],
+          "index": 2
+        },
+        {
+          "rows": 80040,
+          "payload_digest": 602401899297317144,
+          "key_min": [
+            375,
+            4331
+          ],
+          "key_max": [
+            500,
+            6215
+          ],
+          "index": 3
+        },
+        {
+          "rows": 80038,
+          "payload_digest": -9174344417213555755,
+          "key_min": [
+            500,
+            6232
+          ],
+          "key_max": [
+            626,
+            3444
+          ],
+          "index": 4
+        },
+        {
+          "rows": 80003,
+          "payload_digest": 1688751705035627241,
+          "key_min": [
+            626,
+            3445
+          ],
+          "key_max": [
+            750,
+            6950
+          ],
+          "index": 5
+        },
+        {
+          "rows": 79949,
+          "payload_digest": 2409024122878021826,
+          "key_min": [
+            750,
+            7012
+          ],
+          "key_max": [
+            875,
+            6550
+          ],
+          "index": 6
+        },
+        {
+          "rows": 79960,
+          "payload_digest": -7010492399600866975,
+          "key_min": [
+            875,
+            6573
+          ],
+          "key_max": [
+            999,
+            9994
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "uniform",
+      "input_partitions": 32,
+      "target_partitions": 8,
+      "shuffle_method": "disk",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          0
+        ],
+        [
+          124,
+          7434
+        ],
+        [
+          250,
+          8116
+        ],
+        [
+          375,
+          4331
+        ],
+        [
+          500,
+          6232
+        ],
+        [
+          626,
+          3445
+        ],
+        [
+          750,
+          7012
+        ],
+        [
+          875,
+          6573
+        ],
+        [
+          999,
+          9994
+        ]
+      ],
+      "planning_seconds": 0.3505,
+      "compute_seconds": 0.1311,
+      "uploaded_keys": 131008,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 131136,
+      "total_rows": 640000,
+      "expected_rows": 640000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 15435768,
+      "per_partition": [
+        {
+          "rows": 80009,
+          "payload_digest": -8603357839323897406,
+          "key_min": [
+            0,
+            0
+          ],
+          "key_max": [
+            124,
+            7423
+          ],
+          "index": 0
+        },
+        {
+          "rows": 80051,
+          "payload_digest": 2686133760798549557,
+          "key_min": [
+            124,
+            7434
+          ],
+          "key_max": [
+            250,
+            8086
+          ],
+          "index": 1
+        },
+        {
+          "rows": 79950,
+          "payload_digest": 7188836194215229491,
+          "key_min": [
+            250,
+            8116
+          ],
+          "key_max": [
+            375,
+            4321
+          ],
+          "index": 2
+        },
+        {
+          "rows": 80040,
+          "payload_digest": 602401899297317144,
+          "key_min": [
+            375,
+            4331
+          ],
+          "key_max": [
+            500,
+            6215
+          ],
+          "index": 3
+        },
+        {
+          "rows": 80038,
+          "payload_digest": -9174344417213555755,
+          "key_min": [
+            500,
+            6232
+          ],
+          "key_max": [
+            626,
+            3444
+          ],
+          "index": 4
+        },
+        {
+          "rows": 80003,
+          "payload_digest": 1688751705035627241,
+          "key_min": [
+            626,
+            3445
+          ],
+          "key_max": [
+            750,
+            6950
+          ],
+          "index": 5
+        },
+        {
+          "rows": 79949,
+          "payload_digest": 2409024122878021826,
+          "key_min": [
+            750,
+            7012
+          ],
+          "key_max": [
+            875,
+            6550
+          ],
+          "index": 6
+        },
+        {
+          "rows": 79960,
+          "payload_digest": -7010492399600866975,
+          "key_min": [
+            875,
+            6573
+          ],
+          "key_max": [
+            999,
+            9994
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "skew_first",
+      "input_partitions": 8,
+      "target_partitions": 8,
+      "shuffle_method": "tasks",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          1438
+        ],
+        [
+          7,
+          1640
+        ],
+        [
+          7,
+          3317
+        ],
+        [
+          7,
+          4991
+        ],
+        [
+          7,
+          6658
+        ],
+        [
+          7,
+          8327
+        ],
+        [
+          11,
+          4370
+        ],
+        [
+          504,
+          3544
+        ],
+        [
+          999,
+          9004
+        ]
+      ],
+      "planning_seconds": 0.0764,
+      "compute_seconds": 0.0648,
+      "uploaded_keys": 32752,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 32784,
+      "total_rows": 160000,
+      "expected_rows": 160000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 3860664,
+      "per_partition": [
+        {
+          "rows": 23846,
+          "payload_digest": -3744667937158794100,
+          "key_min": [
+            0,
+            1438
+          ],
+          "key_max": [
+            7,
+            1639
+          ],
+          "index": 0
+        },
+        {
+          "rows": 23805,
+          "payload_digest": -2841123993270390849,
+          "key_min": [
+            7,
+            1640
+          ],
+          "key_max": [
+            7,
+            3316
+          ],
+          "index": 1
+        },
+        {
+          "rows": 24272,
+          "payload_digest": -44610579487450597,
+          "key_min": [
+            7,
+            3317
+          ],
+          "key_max": [
+            7,
+            4990
+          ],
+          "index": 2
+        },
+        {
+          "rows": 23999,
+          "payload_digest": -7004794815924586187,
+          "key_min": [
+            7,
+            4991
+          ],
+          "key_max": [
+            7,
+            6657
+          ],
+          "index": 3
+        },
+        {
+          "rows": 23920,
+          "payload_digest": -5534398488011106258,
+          "key_min": [
+            7,
+            6658
+          ],
+          "key_max": [
+            7,
+            8326
+          ],
+          "index": 4
+        },
+        {
+          "rows": 24254,
+          "payload_digest": -3803610443413352061,
+          "key_min": [
+            7,
+            8327
+          ],
+          "key_max": [
+            11,
+            3244
+          ],
+          "index": 5
+        },
+        {
+          "rows": 7958,
+          "payload_digest": 2553924185041888142,
+          "key_min": [
+            11,
+            4370
+          ],
+          "key_max": [
+            504,
+            2932
+          ],
+          "index": 6
+        },
+        {
+          "rows": 7946,
+          "payload_digest": -7290557699345951324,
+          "key_min": [
+            504,
+            3544
+          ],
+          "key_max": [
+            999,
+            9004
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "skew_first",
+      "input_partitions": 8,
+      "target_partitions": 8,
+      "shuffle_method": "disk",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          1438
+        ],
+        [
+          7,
+          1640
+        ],
+        [
+          7,
+          3317
+        ],
+        [
+          7,
+          4991
+        ],
+        [
+          7,
+          6658
+        ],
+        [
+          7,
+          8327
+        ],
+        [
+          11,
+          4370
+        ],
+        [
+          504,
+          3544
+        ],
+        [
+          999,
+          9004
+        ]
+      ],
+      "planning_seconds": 0.078,
+      "compute_seconds": 0.1284,
+      "uploaded_keys": 32752,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 32784,
+      "total_rows": 160000,
+      "expected_rows": 160000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 3860664,
+      "per_partition": [
+        {
+          "rows": 23846,
+          "payload_digest": -3744667937158794100,
+          "key_min": [
+            0,
+            1438
+          ],
+          "key_max": [
+            7,
+            1639
+          ],
+          "index": 0
+        },
+        {
+          "rows": 23805,
+          "payload_digest": -2841123993270390849,
+          "key_min": [
+            7,
+            1640
+          ],
+          "key_max": [
+            7,
+            3316
+          ],
+          "index": 1
+        },
+        {
+          "rows": 24272,
+          "payload_digest": -44610579487450597,
+          "key_min": [
+            7,
+            3317
+          ],
+          "key_max": [
+            7,
+            4990
+          ],
+          "index": 2
+        },
+        {
+          "rows": 23999,
+          "payload_digest": -7004794815924586187,
+          "key_min": [
+            7,
+            4991
+          ],
+          "key_max": [
+            7,
+            6657
+          ],
+          "index": 3
+        },
+        {
+          "rows": 23920,
+          "payload_digest": -5534398488011106258,
+          "key_min": [
+            7,
+            6658
+          ],
+          "key_max": [
+            7,
+            8326
+          ],
+          "index": 4
+        },
+        {
+          "rows": 24254,
+          "payload_digest": -3803610443413352061,
+          "key_min": [
+            7,
+            8327
+          ],
+          "key_max": [
+            11,
+            3244
+          ],
+          "index": 5
+        },
+        {
+          "rows": 7958,
+          "payload_digest": 2553924185041888142,
+          "key_min": [
+            11,
+            4370
+          ],
+          "key_max": [
+            504,
+            2932
+          ],
+          "index": 6
+        },
+        {
+          "rows": 7946,
+          "payload_digest": -7290557699345951324,
+          "key_min": [
+            504,
+            3544
+          ],
+          "key_max": [
+            999,
+            9004
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "skew_first",
+      "input_partitions": 32,
+      "target_partitions": 8,
+      "shuffle_method": "tasks",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          48
+        ],
+        [
+          7,
+          2776
+        ],
+        [
+          7,
+          5661
+        ],
+        [
+          7,
+          8546
+        ],
+        [
+          118,
+          3174
+        ],
+        [
+          338,
+          2849
+        ],
+        [
+          557,
+          6464
+        ],
+        [
+          778,
+          2546
+        ],
+        [
+          999,
+          9984
+        ]
+      ],
+      "planning_seconds": 0.3354,
+      "compute_seconds": 0.1477,
+      "uploaded_keys": 131008,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 131136,
+      "total_rows": 640000,
+      "expected_rows": 640000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 15435768,
+      "per_partition": [
+        {
+          "rows": 160891,
+          "payload_digest": -4881829486460091152,
+          "key_min": [
+            0,
+            48
+          ],
+          "key_max": [
+            7,
+            2775
+          ],
+          "index": 0
+        },
+        {
+          "rows": 165931,
+          "payload_digest": 9030339576963786065,
+          "key_min": [
+            7,
+            2776
+          ],
+          "key_max": [
+            7,
+            5660
+          ],
+          "index": 1
+        },
+        {
+          "rows": 165974,
+          "payload_digest": 2641902576344254382,
+          "key_min": [
+            7,
+            5661
+          ],
+          "key_max": [
+            7,
+            8545
+          ],
+          "index": 2
+        },
+        {
+          "rows": 90823,
+          "payload_digest": -8381569295560773188,
+          "key_min": [
+            7,
+            8546
+          ],
+          "key_max": [
+            118,
+            3156
+          ],
+          "index": 3
+        },
+        {
+          "rows": 14115,
+          "payload_digest": -1245247746197763045,
+          "key_min": [
+            118,
+            3174
+          ],
+          "key_max": [
+            338,
+            2843
+          ],
+          "index": 4
+        },
+        {
+          "rows": 14104,
+          "payload_digest": -2499002024481500610,
+          "key_min": [
+            338,
+            2849
+          ],
+          "key_max": [
+            557,
+            6210
+          ],
+          "index": 5
+        },
+        {
+          "rows": 14080,
+          "payload_digest": -675822356563640956,
+          "key_min": [
+            557,
+            6464
+          ],
+          "key_max": [
+            778,
+            2284
+          ],
+          "index": 6
+        },
+        {
+          "rows": 14082,
+          "payload_digest": 2307231483493032492,
+          "key_min": [
+            778,
+            2546
+          ],
+          "key_max": [
+            999,
+            9984
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "skew_first",
+      "input_partitions": 32,
+      "target_partitions": 8,
+      "shuffle_method": "disk",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          48
+        ],
+        [
+          7,
+          2776
+        ],
+        [
+          7,
+          5661
+        ],
+        [
+          7,
+          8546
+        ],
+        [
+          118,
+          3174
+        ],
+        [
+          338,
+          2849
+        ],
+        [
+          557,
+          6464
+        ],
+        [
+          778,
+          2546
+        ],
+        [
+          999,
+          9984
+        ]
+      ],
+      "planning_seconds": 0.2827,
+      "compute_seconds": 0.1353,
+      "uploaded_keys": 131008,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 131136,
+      "total_rows": 640000,
+      "expected_rows": 640000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 15435768,
+      "per_partition": [
+        {
+          "rows": 160891,
+          "payload_digest": -4881829486460091152,
+          "key_min": [
+            0,
+            48
+          ],
+          "key_max": [
+            7,
+            2775
+          ],
+          "index": 0
+        },
+        {
+          "rows": 165931,
+          "payload_digest": 9030339576963786065,
+          "key_min": [
+            7,
+            2776
+          ],
+          "key_max": [
+            7,
+            5660
+          ],
+          "index": 1
+        },
+        {
+          "rows": 165974,
+          "payload_digest": 2641902576344254382,
+          "key_min": [
+            7,
+            5661
+          ],
+          "key_max": [
+            7,
+            8545
+          ],
+          "index": 2
+        },
+        {
+          "rows": 90823,
+          "payload_digest": -8381569295560773188,
+          "key_min": [
+            7,
+            8546
+          ],
+          "key_max": [
+            118,
+            3156
+          ],
+          "index": 3
+        },
+        {
+          "rows": 14115,
+          "payload_digest": -1245247746197763045,
+          "key_min": [
+            118,
+            3174
+          ],
+          "key_max": [
+            338,
+            2843
+          ],
+          "index": 4
+        },
+        {
+          "rows": 14104,
+          "payload_digest": -2499002024481500610,
+          "key_min": [
+            338,
+            2849
+          ],
+          "key_max": [
+            557,
+            6210
+          ],
+          "index": 5
+        },
+        {
+          "rows": 14080,
+          "payload_digest": -675822356563640956,
+          "key_min": [
+            557,
+            6464
+          ],
+          "key_max": [
+            778,
+            2284
+          ],
+          "index": 6
+        },
+        {
+          "rows": 14082,
+          "payload_digest": 2307231483493032492,
+          "key_min": [
+            778,
+            2546
+          ],
+          "key_max": [
+            999,
+            9984
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "skew_full",
+      "input_partitions": 8,
+      "target_partitions": 8,
+      "shuffle_method": "tasks",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          1438
+        ],
+        [
+          123,
+          7990
+        ],
+        [
+          252,
+          3911
+        ],
+        [
+          376,
+          1795
+        ],
+        [
+          497,
+          7760
+        ],
+        [
+          621,
+          1747
+        ],
+        [
+          746,
+          6436
+        ],
+        [
+          874,
+          6242
+        ],
+        [
+          999,
+          9004
+        ]
+      ],
+      "planning_seconds": 0.0499,
+      "compute_seconds": 0.0292,
+      "uploaded_keys": 32752,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 32784,
+      "total_rows": 160000,
+      "expected_rows": 160000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 3860664,
+      "per_partition": [
+        {
+          "rows": 145904,
+          "payload_digest": -6860449861641947722,
+          "key_min": [
+            0,
+            1438
+          ],
+          "key_max": [
+            123,
+            7979
+          ],
+          "index": 0
+        },
+        {
+          "rows": 2012,
+          "payload_digest": -4299306321028827308,
+          "key_min": [
+            123,
+            7990
+          ],
+          "key_max": [
+            252,
+            3895
+          ],
+          "index": 1
+        },
+        {
+          "rows": 2024,
+          "payload_digest": 8988685409463540730,
+          "key_min": [
+            252,
+            3911
+          ],
+          "key_max": [
+            376,
+            1094
+          ],
+          "index": 2
+        },
+        {
+          "rows": 2008,
+          "payload_digest": -5993507173673826750,
+          "key_min": [
+            376,
+            1795
+          ],
+          "key_max": [
+            497,
+            7620
+          ],
+          "index": 3
+        },
+        {
+          "rows": 2015,
+          "payload_digest": 5172851692328193505,
+          "key_min": [
+            497,
+            7760
+          ],
+          "key_max": [
+            621,
+            1516
+          ],
+          "index": 4
+        },
+        {
+          "rows": 2021,
+          "payload_digest": -8211217718677544722,
+          "key_min": [
+            621,
+            1747
+          ],
+          "key_max": [
+            746,
+            6137
+          ],
+          "index": 5
+        },
+        {
+          "rows": 2017,
+          "payload_digest": -2429808491207608236,
+          "key_min": [
+            746,
+            6436
+          ],
+          "key_max": [
+            874,
+            5884
+          ],
+          "index": 6
+        },
+        {
+          "rows": 1999,
+          "payload_digest": -3582386739683729224,
+          "key_min": [
+            874,
+            6242
+          ],
+          "key_max": [
+            999,
+            9004
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "skew_full",
+      "input_partitions": 8,
+      "target_partitions": 8,
+      "shuffle_method": "disk",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          1438
+        ],
+        [
+          123,
+          7990
+        ],
+        [
+          252,
+          3911
+        ],
+        [
+          376,
+          1795
+        ],
+        [
+          497,
+          7760
+        ],
+        [
+          621,
+          1747
+        ],
+        [
+          746,
+          6436
+        ],
+        [
+          874,
+          6242
+        ],
+        [
+          999,
+          9004
+        ]
+      ],
+      "planning_seconds": 0.0433,
+      "compute_seconds": 0.0328,
+      "uploaded_keys": 32752,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 32784,
+      "total_rows": 160000,
+      "expected_rows": 160000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 3860664,
+      "per_partition": [
+        {
+          "rows": 145904,
+          "payload_digest": -6860449861641947722,
+          "key_min": [
+            0,
+            1438
+          ],
+          "key_max": [
+            123,
+            7979
+          ],
+          "index": 0
+        },
+        {
+          "rows": 2012,
+          "payload_digest": -4299306321028827308,
+          "key_min": [
+            123,
+            7990
+          ],
+          "key_max": [
+            252,
+            3895
+          ],
+          "index": 1
+        },
+        {
+          "rows": 2024,
+          "payload_digest": 8988685409463540730,
+          "key_min": [
+            252,
+            3911
+          ],
+          "key_max": [
+            376,
+            1094
+          ],
+          "index": 2
+        },
+        {
+          "rows": 2008,
+          "payload_digest": -5993507173673826750,
+          "key_min": [
+            376,
+            1795
+          ],
+          "key_max": [
+            497,
+            7620
+          ],
+          "index": 3
+        },
+        {
+          "rows": 2015,
+          "payload_digest": 5172851692328193505,
+          "key_min": [
+            497,
+            7760
+          ],
+          "key_max": [
+            621,
+            1516
+          ],
+          "index": 4
+        },
+        {
+          "rows": 2021,
+          "payload_digest": -8211217718677544722,
+          "key_min": [
+            621,
+            1747
+          ],
+          "key_max": [
+            746,
+            6137
+          ],
+          "index": 5
+        },
+        {
+          "rows": 2017,
+          "payload_digest": -2429808491207608236,
+          "key_min": [
+            746,
+            6436
+          ],
+          "key_max": [
+            874,
+            5884
+          ],
+          "index": 6
+        },
+        {
+          "rows": 1999,
+          "payload_digest": -3582386739683729224,
+          "key_min": [
+            874,
+            6242
+          ],
+          "key_max": [
+            999,
+            9004
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "skew_full",
+      "input_partitions": 32,
+      "target_partitions": 8,
+      "shuffle_method": "tasks",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          48
+        ],
+        [
+          125,
+          1387
+        ],
+        [
+          250,
+          4811
+        ],
+        [
+          374,
+          5441
+        ],
+        [
+          498,
+          4111
+        ],
+        [
+          622,
+          8469
+        ],
+        [
+          747,
+          6795
+        ],
+        [
+          875,
+          2337
+        ],
+        [
+          999,
+          9984
+        ]
+      ],
+      "planning_seconds": 0.1623,
+      "compute_seconds": 0.0725,
+      "uploaded_keys": 131008,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 131136,
+      "total_rows": 640000,
+      "expected_rows": 640000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 15435768,
+      "per_partition": [
+        {
+          "rows": 584038,
+          "payload_digest": 8299245563536988512,
+          "key_min": [
+            0,
+            48
+          ],
+          "key_max": [
+            125,
+            1362
+          ],
+          "index": 0
+        },
+        {
+          "rows": 8017,
+          "payload_digest": 2642609249305866888,
+          "key_min": [
+            125,
+            1387
+          ],
+          "key_max": [
+            250,
+            4793
+          ],
+          "index": 1
+        },
+        {
+          "rows": 7988,
+          "payload_digest": 1687140808196259437,
+          "key_min": [
+            250,
+            4811
+          ],
+          "key_max": [
+            374,
+            5271
+          ],
+          "index": 2
+        },
+        {
+          "rows": 7994,
+          "payload_digest": -3269379946096323329,
+          "key_min": [
+            374,
+            5441
+          ],
+          "key_max": [
+            498,
+            3954
+          ],
+          "index": 3
+        },
+        {
+          "rows": 8004,
+          "payload_digest": -3428573047858730338,
+          "key_min": [
+            498,
+            4111
+          ],
+          "key_max": [
+            622,
+            8095
+          ],
+          "index": 4
+        },
+        {
+          "rows": 7983,
+          "payload_digest": -6413106609607939179,
+          "key_min": [
+            622,
+            8469
+          ],
+          "key_max": [
+            747,
+            6766
+          ],
+          "index": 5
+        },
+        {
+          "rows": 8016,
+          "payload_digest": -7197749685122906393,
+          "key_min": [
+            747,
+            6795
+          ],
+          "key_max": [
+            875,
+            2284
+          ],
+          "index": 6
+        },
+        {
+          "rows": 7960,
+          "payload_digest": 9019884301114453015,
+          "key_min": [
+            875,
+            2337
+          ],
+          "key_max": [
+            999,
+            9984
+          ],
+          "index": 7
+        }
+      ]
+    },
+    {
+      "distribution": "skew_full",
+      "input_partitions": 32,
+      "target_partitions": 8,
+      "shuffle_method": "disk",
+      "output_partitions": 8,
+      "divisions": [
+        [
+          0,
+          48
+        ],
+        [
+          125,
+          1387
+        ],
+        [
+          250,
+          4811
+        ],
+        [
+          374,
+          5441
+        ],
+        [
+          498,
+          4111
+        ],
+        [
+          622,
+          8469
+        ],
+        [
+          747,
+          6795
+        ],
+        [
+          875,
+          2337
+        ],
+        [
+          999,
+          9984
+        ]
+      ],
+      "planning_seconds": 0.2349,
+      "compute_seconds": 0.1405,
+      "uploaded_keys": 131008,
+      "planner_state_keys": 9,
+      "planner_sample_bound": 131136,
+      "total_rows": 640000,
+      "expected_rows": 640000,
+      "rows_match": true,
+      "payload_digests_match": true,
+      "exchange_bytes": 15435768,
+      "per_partition": [
+        {
+          "rows": 584038,
+          "payload_digest": 8299245563536988512,
+          "key_min": [
+            0,
+            48
+          ],
+          "key_max": [
+            125,
+            1362
+          ],
+          "index": 0
+        },
+        {
+          "rows": 8017,
+          "payload_digest": 2642609249305866888,
+          "key_min": [
+            125,
+            1387
+          ],
+          "key_max": [
+            250,
+            4793
+          ],
+          "index": 1
+        },
+        {
+          "rows": 7988,
+          "payload_digest": 1687140808196259437,
+          "key_min": [
+            250,
+            4811
+          ],
+          "key_max": [
+            374,
+            5271
+          ],
+          "index": 2
+        },
+        {
+          "rows": 7994,
+          "payload_digest": -3269379946096323329,
+          "key_min": [
+            374,
+            5441
+          ],
+          "key_max": [
+            498,
+            3954
+          ],
+          "index": 3
+        },
+        {
+          "rows": 8004,
+          "payload_digest": -3428573047858730338,
+          "key_min": [
+            498,
+            4111
+          ],
+          "key_max": [
+            622,
+            8095
+          ],
+          "index": 4
+        },
+        {
+          "rows": 7983,
+          "payload_digest": -6413106609607939179,
+          "key_min": [
+            622,
+            8469
+          ],
+          "key_max": [
+            747,
+            6766
+          ],
+          "index": 5
+        },
+        {
+          "rows": 8016,
+          "payload_digest": -7197749685122906393,
+          "key_min": [
+            747,
+            6795
+          ],
+          "key_max": [
+            875,
+            2284
+          ],
+          "index": 6
+        },
+        {
+          "rows": 7960,
+          "payload_digest": 9019884301114453015,
+          "key_min": [
+            875,
+            2337
+          ],
+          "key_max": [
+            999,
+            9984
+          ],
+          "index": 7
+        }
+      ]
+    }
+  ]
+}
